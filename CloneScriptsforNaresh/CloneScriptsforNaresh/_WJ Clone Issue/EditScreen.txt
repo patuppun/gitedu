@@ -1,0 +1,7 @@
+boolean isDisabled = false;
+
+string [] ret =  BA_createTextArea("", "You must manually copy these fields to the newly created issue:\nCustomer Name, Platform Found On, Release Found, Target Branch, FASTPATH Component\n ", true);
+
+ret =  arraysConcat(ret,BA_createInput("", "After pressing Execute, the newly created issue will be listed under Issue Links.", true));
+
+return ret;

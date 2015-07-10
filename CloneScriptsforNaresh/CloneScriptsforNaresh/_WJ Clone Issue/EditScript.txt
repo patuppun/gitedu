@@ -1,0 +1,191 @@
+string k;
+string file_debug2;
+
+file_debug2 ="\n";
+file_debug2 +=("project="+project+" key="+key+" issueType=\""+issueType+"\" Summary="+summary);
+k = createIssue(project, "", issueType, "Clone: "+summary);
+file_debug2 +=("new issue: " + k);
+
+//string [] fields = {"assignee","Issue Description","OS","Product","Severity","Issue Origin","Test Case ID","Chip", "Product", "Software Component", "Hardware/Board Revision", "Customer", "Issue Type", "Phase Found", "Priority", "Release Found", "Reporter", "summary", "Target Branch", "Test Blockage"};
+
+//string [] fields = {"assignee", "priority", "reporter"};
+
+// iterate over key/value pairs in values mapping
+//for (string field in fields) {
+// %k%.field = field;
+//}
+
+%k%.assignee = assignee;
+%k%.priority = priority;
+%k%.reporter = currentUser();
+//Chip
+%k%.customfield_10000 = customfield_10000;
+//Customer
+%k%.customfield_10002 = customfield_10002; 
+//Hardware/Board Revision
+%k%.customfield_10007 = customfield_10007;
+//Issue Description
+%k%.customfield_10008 = customfield_10008;
+//Issue Origin
+%k%.customfield_10009 = customfield_10009;
+//Issue Type
+//OS
+%k%.customfield_10013 = customfield_10013; 
+//Phase Found
+%k%.customfield_10017 = customfield_10017;
+//Product
+%k%.customfield_10018 = customfield_10018;
+//Release Found
+%k%.customfield_10022 = customfield_10022;
+//Severity
+%k%.customfield_10032 = customfield_10032;
+//Software Component
+%k%.customfield_10026 = customfield_10026;
+//Target Branch
+%k%.customfield_10023 = customfield_10023;
+//Test Case ID
+%k%.customfield_10029 = customfield_10029;
+//Test Blockage
+%k%.customfield_10202 = customfield_10202;
+
+
+
+//Set the Verifier Field based upon the Reporter
+//%k%.customfield_10303 = currentUser();
+
+
+// Handle nFeed Fields
+file_debug2 +="\n";
+file_debug2 +=("Test nFeed Start \n");
+file_debug2 +=("Test nFeed Start \n");
+file_debug2 +=("nFeed Values Before Set \n");
+file_debug2 +=("From Values \n");
+file_debug2 +=( "Customer Name: customfield_10002 = " + customfield_10002[0]+ "\n");
+file_debug2 +=( "Release Found: customfield_10022 = " + customfield_10022[0] + "\n");
+file_debug2 +=( "Target Branch: customfield_10023 = " + customfield_10023[0] + "\n");
+file_debug2 +=("To Values \n");
+file_debug2 +=( "Customer Name: %k%.customfield_10002 = " + %k%.customfield_10002[0] + "\n");
+file_debug2 +=( "Release Found: %k%.customfield_10022 = " + %k%.customfield_10022[0] + "\n");
+file_debug2 +=( "Target Branch: %k%.customfield_10023 = " + %k%.customfield_10023[0] + "\n");
+
+//////////////////////////////////////////////////////////////////
+//Set the nFeed Fields
+//////////////////////////////////////////////////////////////////
+
+//Set the Customer Name Field
+//%k%.customfield_10002 = customfield_10002;
+//Set the Platform Found On Field
+//%k%.customfield_12204 = customfield_12204;
+//Set the Release Found Field
+//%k%.customfield_10022 = customfield_10022;
+//Set the Target Branch Field
+//%k%.customfield_10023 = customfield_10023;
+//Set the FASTPATH Component Field
+//%k%.customfield_12202 = customfield_12202;
+
+
+file_debug2 +=("nFeed Values After Set \n");
+file_debug2 +=("From Values \n");
+file_debug2 +=( "Customer Name: .customfield_10002 = " + customfield_10002[0] + "\n");
+//file_debug2 +=( "Platform Found On: customfield_12204 = " + customfield_12204[0] + "\n");
+file_debug2 +=( "Release Found: customfield_10022 = " + customfield_10022[0] + "\n");
+file_debug2 +=( "Target Branch: customfield_10023 = " + customfield_10023[0] + "\n");
+//file_debug2 +=( "FASTPATH Component: customfield_12202 = " + customfield_12202[0] + "\n");
+file_debug2 +=("To Values \n");
+file_debug2 +=( "Customer Name: %k%.customfield_10002 = " + %k%.customfield_10002[0] + "\n");
+//file_debug2 +=( "Platform Found On: %k%.customfield_12204 = " + %k%.customfield_12204[0] + "\n");
+file_debug2 +=( "Release Found: %k%.customfield_10022 = " + %k%.customfield_10022[0] + "\n");
+file_debug2 +=( "Target Branch: %k%.customfield_10023 = " + %k%.customfield_10023[0] + "\n");
+//file_debug2 +=( "FASTPATH Component: %k%.customfield_12202 = " + %k%.customfield_12202[0] + "\n");
+file_debug2 +=("Test nFeed End \n");
+file_debug2 +=("Test nFeed End \n");
+
+print(file_debug2);
+
+
+
+//////////////////////////////////////////////////////////////////
+// Link Issue
+////////////////////////////////////////////////////////////////////
+
+linkIssue(k, key, "Cloners");
+linkIssue(k, key, "Relates");
+
+
+
+//////////////////////////////////////////////////////////////////
+// Clone Attachments
+//
+// Developer Note: 
+//
+//   This code is the identical for all Clone buttons across all issue types.
+//   As of the initial implementation,  this code is not implemented as a User Defined Routine (UDR).
+//   This may be considered later, after some experience with how JIRA and/or SIL provides protection for simulataneous access.
+//
+//////////////////////////////////////////////////////////////////
+
+
+number loop_count;
+string file_debug;
+string root_path;
+string old_path;  
+string new_path;
+string index_db_id;
+string index_file_name;
+string file_db_id;
+string file_name;
+string strSQL;
+
+
+
+// Inititialize parameters
+file_debug ="\n";
+root_path = "/projects/ccxsw_jira/staging/jirahome/data/attachments/";
+
+
+// The attachment table for the issue is arranged as a Database ID and a file name.
+// The SQL query will return an array containing this tuple for all attached files.
+// Walk the array in increments of 2, as per the table layout.
+// Copy each originally stored file (named by database ID) into a file named by filename.
+// Attach the copied file to the cloned issue.  Then delete the temporary (copied) file.
+
+//strSQL="select id, filename from jiraschema.fileattachment where issueid="+id+" order by id desc";
+strSQL="select ID, filename from CCXSW_JIRA_Staging.fileattachment where issueid=38600 order by id desc  ";
+loop_count = size(attachments)*2;
+file_debug +=("loop_count  = " + loop_count  + "\n");
+
+for(int i = 0; i < loop_count; i+=2){
+  number index_db_id = i;
+  number index_file_name = i + 1;
+
+
+  file_db_id=getElement(sql("jiraDB", strSQL),index_db_id);
+  file_name=getElement(sql("jiraDB", strSQL),index_file_name);
+
+  old_path = root_path;
+  old_path += project + "/" + key + "/" + file_db_id;
+  
+  new_path = root_path;
+  new_path += project + "/" + key + "/" + file_name;
+
+  file_debug +="LOOP INDEX = " + i + "\n";
+  file_debug +=("index_db_id = " + index_db_id + "\n");
+  file_debug +=("index_file_name = " + index_file_name + "\n");
+  file_debug +=("file_db_id = " + file_db_id + "\n");
+  file_debug +=("file_name = " + file_name + "\n");
+  file_debug +=("old_path = " + old_path + "\n");
+  file_debug +=("new_path = " + new_path + "\n");
+
+  if (fileCopy(old_path, new_path) == true)
+  {
+    file_debug += ("Successfully copied from old to new \n");
+    if (attachFile(new_path,k) == true)
+    {
+      deleteFile(new_path);
+    }
+  }
+
+} // for ( i < loop_count)
+
+
+print(file_debug);

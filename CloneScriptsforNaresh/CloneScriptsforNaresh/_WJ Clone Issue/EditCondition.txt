@@ -1,0 +1,5 @@
+number ENABLED = 1;
+number DISABLED = 2;
+number HIDDEN = 3;
+
+return ENABLED;
