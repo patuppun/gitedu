@@ -1,0 +1,48 @@
+#!/export/electriccloud/electriccommander/bin/ec-perl
+use strict;     # Perl pragma to restrict unsafe constructs
+use warnings;   # Perl pragma to enable all optional warnings
+use ElectricCommander;
+use XML::XPath;
+
+sub get_args($) {
+   my ($cmdr) = @_;
+   my $xPath = $cmdr->getProperties({jobId => $ENV{COMMANDER_JOBID}});
+   $xPath = $cmdr->getProperties({propertySheetId => $xPath->findvalue('//propertySheetId')});
+
+   my %args;
+   foreach my $property ($xPath->findnodes('//property')) {
+      $args{$property->findvalue('propertyName')} = $property->findvalue('value')->value();
+   }
+   return %args;
+}
+
+my $tools_dir = $0;
+$tools_dir =~ s/\/[^\/]+$//;
+
+my $cmdr = ElectricCommander->new();
+my %args = get_args($cmdr);
+my $execute = $args{Test} ? '' : '-x';
+
+foreach my $dept (split(' ', $args{Departments})) {
+   print "Create JobStep (/jobs/$ENV{COMMANDER_JOBID}): $dept\n";
+   my $cmd = "perl \$[/myProcedure/tools_path]/jira/userlist.pl --group $args{Group} $dept | perl \$[/myProcedure/tools_path]/jira/JiraCreateUsers.pl $execute --jira_url=http://\$[Jira Server] --dbg=1";
+   print "> $cmd\n";
+   my $subjob = $cmdr->createJobStep({jobStepId => $ENV{COMMANDER_JOBSTEPID},
+                                      jobStepName => "dept-$dept",
+                                      command => $cmd,
+                                      parallel => 'false',
+                                      errorHandling => 'failProcedure',
+                                      });
+}
+
+if ($args{Org}) {
+   print "Create JobStep (/jobs/$ENV{COMMANDER_JOBID}): $args{Org}\n";
+   my $cmd = "perl \$[/myProcedure/tools_path]/jira/userlist.pl --group $args{Group} --org \"$args{Org}\" | perl \$[/myProcedure/tools_path]/jira/JiraCreateUsers.pl $execute --jira_url=http://\$[Jira Server] --dbg=1";
+   print "> $cmd\n";
+   my $subjob = $cmdr->createJobStep({jobStepId => $ENV{COMMANDER_JOBSTEPID},
+                                    jobStepName => "$args{Org}",
+                                    command => $cmd,
+                                    parallel => 'false',
+                                    errorHandling => 'failProcedure',
+                                    });
+}

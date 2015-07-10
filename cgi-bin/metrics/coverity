@@ -1,0 +1,30 @@
+#!/usr/local/bin/perl
+
+# 
+use CGI qw( :standard );
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
+
+use FindBin qw($Bin $Script);
+
+$| = 1;
+
+my $query = CGI->new;
+my $dept = $query->param('dept');
+my $debug = $query->param('debug');
+my $max = $query->param('max') || 0;
+
+$ENV{PATH} = "/usr/local/bin:/tools/bin:$ENV{PATH}";
+
+print "Content-type: text/plain\n\n";
+if ($dept) {
+   my $debug_opt = ($debug) ? '--debug' : '';
+   my $max_opt = ($max) ? "--max $max" : '';
+
+   my $cmd = "perl $Bin/../../coverity/get-dept-defects.pl $max_opt $debug_opt --dept $dept";
+   print "> $cmd\n" if ($debug);
+   print `$cmd`;
+}
+else {
+   print "ERROR: No department specified ($dept).";
+}
+

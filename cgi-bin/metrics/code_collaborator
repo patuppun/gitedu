@@ -1,0 +1,18 @@
+#!/usr/local/bin/perl
+use CGI qw( :standard );
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
+
+use FindBin qw($Bin $Script);
+
+my $tools_dir = "$Bin/../..";
+
+$| = 1;
+
+my $query = CGI->new;
+my $group = $query->param('group') || 'NWSOFT';
+
+print "Content-type: text/html\n\n",
+      "<pre>\n",
+      `perl $tools_dir/code_collaborator/generate_defect_report.pl --group \"$group\"`,
+      "</pre>\n";
+

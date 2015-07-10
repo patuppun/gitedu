@@ -1,0 +1,217 @@
+#!/export/electriccloud/electriccommander/bin/ec-perl
+use strict;     # Perl pragma to restrict unsafe constructs
+use warnings;   # Perl pragma to enable all optional warnings
+use ElectricCommander;
+use XML::XPath;
+use FindBin qw($Bin $Script);
+
+my $tools_dir = "$Bin/..";
+
+# Argument subroutine
+sub get_args($) {
+   my ($cmdr) = @_;
+   my $xPath = $cmdr->getProperties({jobId => $ENV{COMMANDER_JOBID}});
+   $xPath = $cmdr->getProperties({propertySheetId => $xPath->findvalue('//propertySheetId')});
+
+   my %args;
+   foreach my $property ($xPath->findnodes('//property')) {
+      my $key = $property->findvalue('propertyName');
+      my $val = $property->findvalue('value')->value();
+      $args{$key} = $val;
+      msg("$key = $val\n");
+   }
+   return %args;
+}
+
+my $hostname = `hostname`;
+chomp($hostname);
+my $domainname = `domainname`;
+chomp($domainname);
+
+my %domains = {'irvine' => 'irv',
+               'mhtb'   => 'and'};
+
+$domainname = $domains{$domainname} || $domainname;
+
+my $host = "$hostname.$domainname.broadcom.com";
+
+my $cmdr = ElectricCommander->new();
+my %args = get_args($cmdr);
+
+if ($args{Change} =~ /^(.*?):/) {
+   # if change includes summary, remove it
+   $args{Change} = $1;
+}
+
+my $debug = $args{debug} || 0;
+my $debug_opt = $debug ? '--debug' : '';
+
+my $coverity_opt = ($args{Coverity} ne '') ? "--coverity $args{Coverity}" : '';
+my $threads_opt = ($args{Threads} ne '') ? "--threads $args{Threads}" : '';
+
+# Display Subroutines
+sub msg(@) {
+   print scalar(localtime()), ": ", @_;
+}
+sub debug(@) {
+   msg('(DEBUG) ', @_) if ($debug);
+}
+sub run(@) {
+   msg(">",@_,"\n");
+   my $rc = system(@_);
+   return $rc >> 8;
+}
+
+# Begin script
+$cmdr->createProperty({jobStepId => $ENV{COMMANDER_JOBSTEPID},
+                       propertyName => 'Start',
+                       value => '0',
+                       });
+
+# Create a tag for this build if AutoTag is set, except if a tag is specified or building against a task branch
+if ($args{AutoTag} eq 'Y' && $args{Tag} eq '' && $args{Branch} !~ /^task_/) {
+   msg("\nCreate JobStep: Create Tag\n");
+   my $cmd = "\$[/myProcedure/tools_path]/build/tag $debug_opt --site \"\$[Site]\" --repo \"\$[Repo]\" --baseline \"\$[Branch]\" --prefix \"\$[TagPrefix]\"";
+   print "> $cmd\n";
+   my $subjob = $cmdr->createJobStep({jobStepName => 'Create Tag',
+                                      command => $cmd,
+                                      parallel => 'false',
+                                      errorHandling => 'abortProcedure',
+                                      precondition => '$[/myParent/Start]',
+                                      });
+   my $subjobid = $subjob->findvalue('//jobStepId')->value();
+   msg("Created subjob: $subjobid\n");
+}
+
+# if building against a tag
+if ($args{Tag})
+{
+   my $tag_desc = &tag_message($args{Site}, $args{Repo}, $args{Tag});
+   msg("$args{Tag} description:\n$tag_desc\n");
+   if ($tag_desc =~ /branch: (.*?)\n/s) {
+     $args{Branch} = $1;
+     &SetProperty("/myParent/Branch", $1);
+   }
+   &SetProperty("/myJob/report-urls/$args{Tag}", "http://git-ccxsw.rtp.broadcom.com/cgit/git_repos/$args{Repo}.git/log/?h=$args{Tag}");
+}
+
+# load the build data from the config
+my $cmd = "COMMANDER_HOME=$ENV{COMMANDER_HOME} $tools_dir/build/template/build.pl site=\"$args{Site}\" repo=\"$args{Repo}\" branch=\"$args{Branch}\" tag=\"$args{Tag}\" change=\"$args{Change}\" package=\"$args{Package}\" full=1";
+msg("> $cmd\n");
+my @build_data = `$cmd`;
+chomp(@build_data);
+msg(map {"=> $_\n"} @build_data);
+
+@build_data = grep {$_ !~ /^\s*$/ && $_ !~ /text\/html/} @build_data; # filter out header
+map {$_ =~ s/,/;/g} @build_data;  # convert all , to ;
+msg(map {"|$_\n"} @build_data);
+
+# iterate over builds to generate build hash
+my %builds;
+my @package_list;
+foreach my $build_line (@build_data) {
+   my ($build, $default) = split(';', $build_line);
+
+   $builds{$build} = {default => $default};
+   push @package_list, "$build;$default;";
+}
+
+my @builds = $args{Build} ? split("\n", $args{Build}) : @package_list;
+my @submit_builds;
+
+# create job step for each build
+foreach my $build_line (@builds) {
+#   msg(":$build_line\n");
+   my ($build, $enable, $source) = split(';', $build_line);
+   next if ($enable eq 'false');
+
+   # if keepsource globally set or set for this build
+   my $keepsource_opt = (lc($args{KeepSource}) eq 'y' || $args{KeepSource} eq '1' || lc($source) eq 'true') ? '--keep_source' : '';
+
+   msg("\nCreate JobStep: $build\n");
+   my $cmd = "\$[/myProcedure/tools_path]/build/run --site \"\$[Site]\" --repo \"\$[Repo]\" --tag \"\$[Tag]\" --branch \"\$[Branch]\" --change \"\$[Change]\" --type \"\$[Type]\" --storage \"\$[/javascript \"\$[Tag]\" || \"\$[Branch]\".split(\"/\").join(\"_\")]\" --build \"$build\" $coverity_opt $threads_opt $keepsource_opt $debug_opt";
+   print "> $cmd\n";
+   my $subjob = $cmdr->createJobStep({jobStepName => $build || 'build',
+                                      command => $cmd,
+                                      parallel => 'true',
+                                      errorHandling => 'failProcedure',
+                                      status => 'pending',
+                                      });
+
+   my $subjobid = $subjob->findvalue('//jobStepId')->value();
+
+   msg("Created subjob: $subjobid\n");
+   push @submit_builds, $build;
+}
+
+if ($args{Type} eq 'change' || $args{Type} eq 'aggregate') {
+   # craft update
+   my $label = 'Build-Verification';
+   my $type = 'build verification';
+   # if an aggregate build
+   if ($args{Type} eq 'aggregate') {
+      $label = 'Aggregate-Build';
+      $type = 'aggregate build';
+   }
+
+   my $message = "Job submitted for $type:\nhttps://$host/commander/link/jobDetails/jobs/$ENV{COMMANDER_JOBID}\n\n". join("\n", map {"* $_"} @submit_builds),
+   my @changes = split(',', $args{Change});
+   foreach my $change (@changes) {
+      my $change_num = $change;
+      $change_num =~ s/\/.*$//;
+      &SetProperty("/myJob/report-urls/Gerrit Change $change_num", "http://gerrit-ccxsw.rtp.broadcom.com:8080/#/c/$change_num");
+
+      &gerrit_message($change,$message, $label => 1);
+   }
+}
+
+
+$cmdr->setProperty({jobStepId => $ENV{COMMANDER_JOBSTEPID},
+                    propertyName => 'Start',
+                    value => '1',
+                    });
+
+sub SetProperty($$) {
+   my ($property, $value) = @_;
+   my $xPath = undef;
+   eval {
+      $xPath = $cmdr->setProperty($property, $value);
+   };
+   if ($xPath) {
+      print $xPath->findnodes_as_string("/") . "\n" if ($debug); 
+   }
+   else {
+      print $@;
+   }
+}
+
+sub GetProperty($) {
+   my ($property) = @_;
+   my $xPath = undef;
+   eval {
+      $xPath = $cmdr->GetProperty($property);
+   };
+   if ($xPath) {
+      print $xPath->findnodes_as_string("/") . "\n" if ($debug); 
+      return $xPath->findvalue('//value')>value();
+   }
+   else {
+      print $@;
+      return '';
+   }
+}
+
+sub tag_message() {
+   my ($site, $repo, $tag) = @_;
+   my $desc = `ssh svcccxswgit\@git-ccxsw.$site.broadcom.com 'git --git-dir=/home/svcccxswgit/repositories/$repo.git tag -l -n $tag' 2>&1`;
+   return $desc;
+}
+
+sub gerrit_message($$%) {
+   my ($change, $message, %labels) = @_;
+
+   $message ||= '';
+
+   my $debug_opt = $debug ? '--debug' : '';
+   system("$tools_dir/gerrit/gerrit_notify.pl $debug_opt --change $change --message \"$message\" " . join(' ', map {"--label $_=$labels{$_}"} sort(keys(%labels))));
+}

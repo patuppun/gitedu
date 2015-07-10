@@ -1,0 +1,271 @@
+#!/usr/local/bin/perl
+
+use strict;
+use FindBin qw($Bin $Script);
+use Getopt::Long;
+use MIME::Base64;
+use Data::Dumper;
+use JSON;
+
+use lib "$Bin/../../perllib";
+use Gerrit::REST;
+
+$Data::Dumper::Sortkeys = 1;
+
+our %groups;
+
+require "$ENV{HOME}/.gitolite/conf/gitolite.conf-compiled.pm";
+
+my $user_file = '/tools/oss/packages/share/BRCM/etc/BRCMstaff_All.txt';
+
+my $debug = 0;
+my $server = 'gerrit-ccxsw.rtp.broadcom.com:8080';
+
+sub msg(@) { print STDERR scalar(localtime()).": ", @_; }
+sub debug(@) { msg(@_) if ($debug) }
+
+GetOptions('debug'     => \$debug,
+           'server=s'  =~ \$server,
+           );
+
+my %user_db = &load_user_file($user_file);
+debug(scalar(keys(%user_db)), " users loaded...\n");
+
+# load gerrit login information
+my ($user, $password) = &login();
+
+#print "User: '$user'\n";
+#print "Pass: '$password'\n";
+
+# connect to Gerrit
+my $gerrit = Gerrit::REST->new("http://$server", $user, $password);
+
+my $gerrit_groups = eval { $gerrit->GET('/groups/') };
+die $@->as_text if $@;
+
+my %gitolite_groups;
+
+# iterate through gerrit groups and determine gitolite group name and members
+foreach my $gerrit_group_name (keys(%{$gerrit_groups})) {
+   my $gerrit_group = $gerrit_groups->{$gerrit_group_name};
+
+   if ($gerrit_group_name =~ / Users$/ || $gerrit_group_name =~ / Team$/) {
+      my $gitolite_group = "@".lc($gerrit_group_name);
+      $gitolite_group =~ s/ /_/g;
+      $gitolite_groups{$gitolite_group} = $gerrit_group_name;
+      $gerrit_group->{gitolite_group} = $gitolite_group;
+
+      my $cmd = "/groups/$gerrit_group->{id}/members/";
+      my $members = eval { $gerrit->GET("/groups/$gerrit_group->{id}/members/") };
+      die $@->as_text if $@;
+
+      my @member_names = map {$_->{username}} @{$members};
+      $gerrit_group->{members} = {map {$_ => 1} @member_names};
+      debug("$gerrit_group_name has: @member_names\n");
+   }
+}
+
+# find all keys 
+my @keyfiles = `find $ENV{HOME}/.gitolite/keydir/ -name *.pub`;
+chomp(@keyfiles);
+my %user_keyfiles;
+foreach my $file (@keyfiles) {
+   if ($file =~ /\/([^\/]*?)\.pub$/ || $file =~ /^(.*)\.pub$/) {
+      $user_keyfiles{$1} = [];
+      push @{$user_keyfiles{$1}}, `cat $file`;
+   }
+}
+
+my $new_groups = 0;
+# iterate through users in gitolite, and add them to the gerrit group if needed
+foreach my $user (sort(keys(%groups))) {
+   next unless (defined($user_db{$user}));
+
+   my $email_addr = $user_db{$user}{'Email_Addr'};
+   unless ($user_keyfiles{$user}) {
+      msg("User $user: No SSH Keys registered, skipping..\n");
+      next;
+   }
+
+   debug("User $user: $email_addr\n");
+
+   # update user's group membership
+   foreach my $gitolite_group (@{$groups{$user}}) {
+      # if this gitolite group doesn't match anything in Gerrit, create it
+      unless ($gitolite_groups{$gitolite_group}) {
+
+         if ($gitolite_group =~ /_users$/) {
+            # Owners
+            my $owners_group_name = $gitolite_group;
+            $owners_group_name =~ s/_users//;
+            $owners_group_name =~ s/\@//;
+            $owners_group_name = "$owners_group_name Owners";
+
+            msg("$user: Create $owners_group_name ($gitolite_group)\n");
+            my $owners_group = eval { $gerrit->PUT("/groups/$owners_group_name") };
+            die $@->as_text if $@;
+
+            $gerrit_groups->{$owners_group_name} = $owners_group;
+            $gitolite_groups{$gitolite_group} = $owners_group_name;
+
+            msg("cpverne: Add to $owners_group_name ($gitolite_group)\n");
+            eval { $gerrit->PUT("/groups/$owners_group->{id}/members/cpverne") };
+            die $@->as_text if $@;
+
+            $new_groups = 1;
+
+            # Users
+            my $users_group_name = $gitolite_group;
+            $users_group_name =~ s/_users//;
+            $users_group_name =~ s/\@//;
+            $users_group_name = "$users_group_name Users";
+
+            msg("$user: Create $users_group_name ($gitolite_group)\n");
+            my $users_group = eval { $gerrit->PUT("/groups/$users_group_name", 
+                                                  {owner => $owners_group_name,
+                                                   owner_id => $owners_group->{group_id},
+                                                   }) };
+            die $@->as_text if $@;
+
+            $gerrit_groups->{$users_group_name} = $users_group;
+            $gitolite_groups{$gitolite_group} = $users_group_name;
+         }
+         elsif ($gitolite_group =~ /_team$/) {
+            # Team
+            my $team_group_name = $gitolite_group;
+            $team_group_name =~ s/_team//;
+            $team_group_name =~ s/\@//;
+            $team_group_name = "$team_group_name Team";
+
+            msg("$user: Create $team_group_name ($gitolite_group)\n");
+            my $team_group = eval { $gerrit->PUT("/groups/$team_group_name") };
+            die $@->as_text if $@;
+
+            $gerrit_groups->{$team_group_name} = $team_group;
+            $gitolite_groups{$gitolite_group} = $team_group_name;
+         }
+      }
+
+      my $gerrit_group_name = $gitolite_groups{$gitolite_group};
+      my $gerrit_group = $gerrit_groups->{$gerrit_group_name};
+
+      # check if this user needs to be added to a group
+      next if (defined($gerrit_group->{members}->{$user}));
+
+      msg("$user: Add to $gerrit_group_name ($gitolite_group)\n");
+      eval { $gerrit->PUT("/groups/$gerrit_group->{id}/members/$user") };
+
+      die $@->as_text if $@;
+   }
+
+   # Fetch User information
+   my $gerrit_user = eval { $gerrit->GET("/accounts/$user") };
+
+   if ($@) {
+      # user not found
+      msg("$user: Create user.\n");
+      my $ssh_keys = join(' ', map {"--ssh-key \"$_\""} @{$user_keyfiles{$user}});
+      system("ssh -p 29418 gerrit-ccxsw.rtp.broadcom.com 'gerrit create-account $user --email \"$email_addr\" $ssh_keys'");
+      #$gerrit_user = eval { $gerrit->PUT("/accounts/$user",
+      #                                    {email => $email_addr, 
+      #                                     ssh_key => $ssh_key}) };
+
+      # Fetch User information again
+      $gerrit_user = eval { $gerrit->GET("/accounts/$user") };
+
+      if ($@) {
+         # user not found
+         msg("$user: Could not create user.\n");
+         next;
+      }
+   }
+
+   if ($gerrit_user->{email} ne $email_addr) {
+      eval { $gerrit->DELETE("/accounts/$user/emails/$gerrit_user->{email}") };
+      eval { $gerrit->PUT("/accounts/$user/emails/$email_addr/prefered") };
+   }
+
+   # fetch user keys to verify
+   my $sshkeys = eval { $gerrit->GET("/accounts/$user/sshkeys/") };
+   if ($@) {
+      print $@->as_text;
+      next;
+   }
+
+   foreach my $ssh_key (@{$user_keyfiles{$user}}) {
+      my $found = 0;
+      if (@{$sshkeys}) {
+         # find the user's key
+         foreach my $key (@{$sshkeys}) {
+            $found = 1 if ($key->{ssh_public_key} eq $ssh_key);
+         }
+      }
+      unless ($found) {
+         # add key to user
+         msg("$user: Add new key.\n");
+         eval { $gerrit->POST_TEXT("/accounts/$user/sshkeys", $ssh_key) };
+         print $@->as_text if $@;
+      }
+   }
+}
+
+if ($new_groups) {
+   msg("$user: Flushing Caches.\n");
+   system("ssh -p 29418 gerrit-ccxsw.rtp.broadcom.com 'gerrit flush-caches'");
+}
+
+
+sub load_user_file($) {
+   my ($user_file) = @_;
+
+   my %user_db;
+
+   if (-f $user_file) {
+      my @userfile = `cat $user_file`;
+      chomp(@userfile);
+
+      my $headers = shift(@userfile);
+      my @headers = split('\|', $headers);
+
+      @headers = map {$_ =~ s/\"//g; $_} @headers;
+
+      my $count=0;
+      foreach my $line (@userfile) {
+         my %user = ();
+         my @values = split('\|', $line);
+      #   print STDERR "$line" if ($debug);
+         foreach my $i (0..$#headers) {
+            my $value = $values[$i];
+
+            if ($value =~ /^\"(.*?)\"$/) {
+               $value = $1;
+            }
+            $user{$headers[$i]} = $value;
+         }
+
+         my $username = $user{Acct_Name_Unix} || $user{Acct_Name_NT};
+
+         if ($username =~ /(^.*?)\-r$/) {
+            $username = $1;
+         }
+
+         $user_db{$username} = \%user;
+      }
+   }
+
+   return %user_db;
+}
+
+sub login {
+    if (open(NETRC, "$ENV{HOME}/.netrc") || open(NETRC, "$ENV{HOMEDRIVE}$ENV{HOMEPATH}.netrc")) {
+       foreach my $line (<NETRC>) {
+          chomp($line);
+          if ($line =~ /^machine gerrit login (.*?) password (.*?)$/) {
+             return ($1, $2);
+          }
+       }
+    }
+
+    return ( '', '' );
+}
+

@@ -1,0 +1,189 @@
+<plugin-template title="CCXSW Build">
+  <init>
+    <element type="select" uniquename="Site" label="Site" src="$[tools_path]/build/template/site.pl" onchange="UpdateForSite"/>
+  </init>
+  <UpdateForSite value="">
+    <remove>
+      <element type="select" uniquename="Repo"/>
+      <element type="select" uniquename="Branch"/>
+      <element type="select" uniquename="Tag"/>
+      <element type="select" uniquename="Change"/>
+      <element type="textbox" uniquename="Build"/>
+      <element type="checkbox" uniquename="AutoTag"/>
+      <element type="checkbox" uniquename="KeepSource"/>
+      <element type="select" uniquename="Threads"/>
+      <element type="textbox" uniquename="Notify"/>
+      <element type="select" uniquename="Coverity"/>
+    </remove>
+  </UpdateForSite>
+  <UpdateForSite>
+    <remove>
+      <element type="select" uniquename="Repo"/>
+      <element type="select" uniquename="Branch"/>
+      <element type="select" uniquename="Tag"/>
+      <element type="select" uniquename="Change"/>
+      <element type="textbox" uniquename="Build"/>
+      <element type="checkbox" uniquename="AutoTag"/>
+      <element type="checkbox" uniquename="KeepSource"/>
+      <element type="select" uniquename="Threads"/>
+      <element type="textbox" uniquename="Notify"/>
+      <element type="select" uniquename="Coverity"/>
+    </remove>
+    <add>
+      <element type="select" uniquename="Repo" label="Repo" src="$[tools_path]/build/template/repo.pl" arg="site={Site}" onchange="UpdateForRepo"/>
+    </add>
+  </UpdateForSite>
+  <UpdateForRepo value="">
+    <remove>
+      <element type="select" uniquename="Branch"/>
+      <element type="select" uniquename="Tag"/>
+      <element type="select" uniquename="Change"/>
+      <element type="textbox" uniquename="Build"/>
+      <element type="checkbox" uniquename="AutoTag"/>
+      <element type="checkbox" uniquename="KeepSource"/>
+      <element type="select" uniquename="Threads"/>
+      <element type="textbox" uniquename="Notify"/>
+      <element type="select" uniquename="Coverity"/>
+    </remove>
+  </UpdateForRepo>
+  <UpdateForRepo>
+    <remove>
+      <element type="select" uniquename="Branch"/>
+      <element type="select" uniquename="Tag"/>
+      <element type="select" uniquename="Change"/>
+      <element type="select" uniquename="Package"/>
+      <element type="textbox" uniquename="Build"/>
+      <element type="checkbox" uniquename="AutoTag"/>
+      <element type="checkbox" uniquename="KeepSource"/>
+      <element type="select" uniquename="Threads"/>
+      <element type="textbox" uniquename="Notify"/>
+      <element type="select" uniquename="Coverity"/>
+    </remove>
+    <add>
+      <element type="select" uniquename="Branch" label="Branch" src="$[tools_path]/build/template/baseline.pl" arg="site={Site},repo={Repo},type=heads" onchange="UpdateForBranch"/>
+      <element type="select" uniquename="Tag" label="Tag" src="$[tools_path]/build/template/baseline.pl" arg="site={Site},repo={Repo},type=tags" onchange="UpdateForTag"/>
+    </add>
+  </UpdateForRepo>
+  <UpdateForBranch value="">
+    <remove>
+      <element type="select" uniquename="Branch"/>
+      <element type="select" uniquename="Tag"/>
+      <element type="select" uniquename="Change"/>
+      <element type="checkbox" uniquename="AutoTag"/>
+      <element type="checkbox" uniquename="KeepSource"/>
+      <element type="select" uniquename="Threads"/>
+      <element type="textbox" uniquename="Notify"/>
+      <element type="select" uniquename="Coverity"/>
+      <element type="select" uniquename="Package"/>
+      <element type="textbox" uniquename="Build"/>
+    </remove>
+    <add>
+      <element type="select" uniquename="Branch" label="Branch" src="$[tools_path]/build/template/baseline.pl" arg="site={Site},repo={Repo},type=heads" onchange="UpdateForBranch"/>
+      <element type="select" uniquename="Tag" label="Tag" src="$[tools_path]/build/template/baseline.pl" arg="site={Site},repo={Repo},type=tags" onchange="UpdateForTag"/>
+    </add>
+  </UpdateForBranch>
+  <UpdateForBranch>
+    <remove>
+      <element type="textbox" uniquename="Tag"/>
+    </remove>
+    <add>
+      <element type="select" uniquename="Change" label="Change" src="$[tools_path]/build/template/baseline.pl" arg="site={Site},repo={Repo},branch={Branch},type=changes" onchange="UpdateForChange"/>
+      <element type="checkbox" uniquename="AutoTag" label="Auto Tag"/>
+      <element type="checkbox" uniquename="KeepSource" label="Keep Source"/>
+      <element type="select" uniquename="Threads" label="Threads" src="$[tools_path]/build/template/threads.pl" arg="" default="1"/>
+      <element type="textbox" uniquename="Notify" label="Notify"/>
+      <element type="select" uniquename="Coverity" label="Coverity" src="$[tools_path]/build/template/coverity.pl" arg=""/>
+      <element type="select" uniquename="Package" label="Package" src="$[tools_path]/build/template/build.pl" arg="site={Site},repo={Repo},branch={Branch},change={Change},type=package" onchange="UpdateForPackage"/>
+      <element type="grid" uniquename="Build" label="Build" row-src="$[tools_path]/build/template/build.pl" arg="site={Site},repo={Repo},branch={Branch},change={Change},package={Package}" border-width="0">
+        <columns>
+          <column label="Build" type="label"/>
+          <column label="Run" type="checkbox"/>
+          <column label="Source" type="checkbox"/>
+        </columns>
+      </element>
+    </add>
+  </UpdateForBranch>
+  <UpdateForTag value="">
+    <remove>
+      <element type="select" uniquename="Branch"/>
+      <element type="select" uniquename="Tag"/>
+      <element type="select" uniquename="Change"/>
+      <element type="checkbox" uniquename="AutoTag"/>
+      <element type="checkbox" uniquename="KeepSource"/>
+      <element type="select" uniquename="Threads"/>
+      <element type="textbox" uniquename="Notify"/>
+      <element type="select" uniquename="Coverity"/>
+      <element type="select" uniquename="Package"/>
+      <element type="textbox" uniquename="Build"/>
+    </remove>
+    <add>
+      <element type="select" uniquename="Branch" label="Branch" src="$[tools_path]/build/template/baseline.pl" arg="site={Site},repo={Repo},type=heads" onchange="UpdateForBranch"/>
+      <element type="select" uniquename="Tag" label="Tag" src="$[tools_path]/build/template/baseline.pl" arg="site={Site},repo={Repo},type=tags" onchange="UpdateForTag"/>
+    </add>
+  </UpdateForTag>
+  <UpdateForTag>
+    <remove>
+      <element type="select" uniquename="Branch"/>
+    </remove>
+    <add>
+      <element type="checkbox" uniquename="KeepSource" label="Keep Source"/>
+      <element type="select" uniquename="Threads" label="Threads" src="$[tools_path]/build/template/threads.pl" arg="" default="1"/>
+      <element type="textbox" uniquename="Notify" label="Notify"/>
+      <element type="select" uniquename="Coverity" label="Coverity" src="$[tools_path]/build/template/coverity.pl" arg=""/>
+      <element type="select" uniquename="Package" label="Package" src="$[tools_path]/build/template/build.pl" arg="site={Site},repo={Repo},tag={Tag},type=package" onchange="UpdateForPackage"/>
+      <element type="grid" uniquename="Build" label="Build" row-src="$[tools_path]/build/template/build.pl" arg="site={Site},repo={Repo},tag={Tag},package={Package}" border-width="0">
+        <columns>
+          <column label="Build" type="label"/>
+          <column label="Run" type="checkbox"/>
+          <column label="Source" type="checkbox"/>
+        </columns>
+      </element>
+    </add>
+  </UpdateForTag>
+  <UpdateForChange value="">
+    <remove>
+      <element type="select" uniquename="Package"/>
+      <element type="textbox" uniquename="Build"/>
+    </remove>
+    <add>
+      <element type="select" uniquename="Package" label="Package" src="$[tools_path]/build/template/build.pl" arg="site={Site},repo={Repo},branch={Branch},change={Change},type=package" onchange="UpdateForPackage"/>
+      <element type="grid" uniquename="Build" label="Build" row-src="$[tools_path]/build/template/build.pl" arg="site={Site},repo={Repo},branch={Branch},change={Change},package={Package}" border-width="0">
+        <columns>
+          <column label="Build" type="label"/>
+          <column label="Run" type="checkbox"/>
+          <column label="Source" type="checkbox"/>
+        </columns>
+      </element>
+    </add>
+  </UpdateForChange>
+  <UpdateForChange>
+    <remove>
+      <element type="select" uniquename="Package"/>
+      <element type="textbox" uniquename="Build"/>
+    </remove>
+    <add>
+      <element type="select" uniquename="Package" label="Package" src="$[tools_path]/build/template/build.pl" arg="site={Site},repo={Repo},branch={Branch},tag={Tag},change={Change},type=package" onchange="UpdateForPackage"/>
+      <element type="grid" uniquename="Build" label="Build" row-src="$[tools_path]/build/template/build.pl" arg="site={Site},repo={Repo},branch={Branch},tag={Tag},change={Change},package={Package}" border-width="0">
+        <columns>
+          <column label="Build" type="label"/>
+          <column label="Run" type="checkbox"/>
+          <column label="Source" type="checkbox"/>
+        </columns>
+      </element>
+    </add>
+  </UpdateForChange>
+  <UpdateForPackage>
+    <remove>
+      <element type="grid" uniquename="Build"/>
+    </remove>
+    <add>
+      <element type="grid" uniquename="Build" label="Build" row-src="$[tools_path]/build/template/build.pl" arg="site={Site},repo={Repo},branch={Branch},tag={Tag},change={Change},package={Package}" border-width="0">
+        <columns>
+          <column label="Build" type="label"/>
+          <column label="Run" type="checkbox"/>
+          <column label="Source" type="checkbox"/>
+        </columns>
+      </element>
+    </add>
+  </UpdateForPackage>
+</plugin-template>

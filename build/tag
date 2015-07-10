@@ -1,0 +1,293 @@
+#!/export/electriccloud/electriccommander/bin/ec-perl
+use strict;     # Perl pragma to restrict unsafe constructs
+use warnings;   # Perl pragma to enable all optional warnings
+use ElectricCommander;
+use Cwd;
+use File::Path;
+
+my $tools_dir;
+BEGIN 
+{
+   my $script = $0;
+   $script =~ s/\\/\//g;  #convert back to forward slashes to support Windows
+   
+   if ($script =~ /^(.*?\/contrib)\// || 
+       $script =~ /^(.*?\/test)\// || 
+       $script =~ /^(.*?\/tools)\//)
+   {
+      $tools_dir = $1;
+   }
+   else
+   {
+      $tools_dir = "../..";
+      $tools_dir = "$1/$tools_dir" if ($script =~ /^(.*)\//);
+   }
+   print "Tools Dir: $tools_dir\n";
+}
+use lib "$tools_dir/perllib";
+use Getopt::Long qw(:config pass_through);
+
+my $ec = ElectricCommander->new();
+$ec->abortOnError(0);  # don't abort the job if we have trouble connecting to EC
+
+# Process arguments
+my $help = 0;
+my $debug = 0;
+
+my $site = '';
+my $repo = '';
+my $baseline = '';
+my $versioned = 0;
+my $prefix = '';
+
+GetOptions('help|?' => \$help,
+           'debug' => \$debug,
+           'site=s' => \$site,
+           'repo=s' => \$repo,
+           'baseline=s' => \$baseline,
+           'versioned' => \$versioned,
+           'prefix=s' => \$prefix,
+           );
+
+# Display Subroutines
+sub msg(@) {
+   print scalar(localtime()), ": ", @_;
+}
+sub debug(@) {
+   msg('(DEBUG) ', @_) if ($debug);
+}
+sub run(@) {
+   msg(">",@_,"\n");
+   my $rc = system(@_);
+   return $rc >> 8;
+}
+
+if ($help || !$baseline) {
+   msg("Usage: tag --baseline <baseline> ...\n");
+   exit 1;
+}
+
+
+my @branch_parts = split('_', $baseline);
+my @tag_parts;
+
+foreach my $part (@branch_parts) {
+   if ($part =~ /^([0-9\.]+?)$/ || $part =~ /^rel([0-9\.]+?)$/) {
+      $part = $1;
+      $part =~ s/\.//g;
+      push @tag_parts, $part;
+   }
+   else {
+      push @tag_parts, substr($part, 0,1);
+   }
+}
+
+my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = gmtime();
+my $tag = '';
+my $reuse = 0;
+
+if ($versioned) {
+   $tag = uc($baseline);
+   my $last_tag = '';
+   my $new_tag = '';
+
+   # fetch all tags/branch references from server
+   my %refs = &remote_refs();
+
+   if ($baseline =~ /^(.*?)_(\d+?)\.(\d+?)/)
+   {
+      $tag = uc($1);
+      my $ver = "$2.$3";
+      &debug("$tag/$ver\n");
+
+      # find the last build for this branch
+      my $build = 0;
+
+      foreach my $ref (keys(%refs)) {
+         if ($ref =~ /^refs\/tags\/(${tag}_$ver\.(\d+?)\.0)$/) {
+            if ($2 >= $build) {
+               $last_tag = $1;
+               $build = $2;
+            }
+         }
+      }
+
+      # construct the new tag
+      $new_tag = "${tag}_$ver.". ($build+1) . ".0";
+   }
+   elsif ($baseline =~ /^(.*?)_(\d+?)\.(\d+?)\.(\d+?)/)
+   {
+      $tag = uc($1);
+      my $ver = "$2.$3.$4";
+      &debug("$tag/$ver\n");
+
+      # find the last build for this branch
+      my $build = 0;
+
+      foreach my $ref (keys(%refs)) {
+         if ($ref =~ /^refs\/tags\/(${tag}_$ver\.(\d+?))$/) {
+            if ($2 >= $build) {
+               $last_tag = $1;
+               $build = $2;
+            }
+         }
+      }
+
+      # construct the new tag
+      $new_tag = "${tag}_$ver.". $build+1;
+   }
+
+   if ($last_tag) {
+      # find the hash of the commit for the last tag
+      my $last_tag_ref = $refs{"refs/tags/$last_tag^{}"} || '';
+      if ($last_tag_ref =~ /^(.*?)\s/) {
+         $last_tag_ref = $1;
+      }
+      &debug("Last Tag: $last_tag ($last_tag_ref)\n");
+
+      # find the hash of the commit for the baseline
+      my $branch_ref = $refs{"refs/heads/$baseline"} || '';
+      if ($branch_ref =~ /^(.*?)\s/) {
+         $branch_ref = $1;
+      }
+
+      &debug("Branch: $baseline ($branch_ref)\n");
+
+      # if baseline and last tag are the same, the build is against the 
+      # last tag and should use the same tag
+
+      if ($last_tag_ref eq $branch_ref) {
+         &debug("Last Tag and Branch HEAD are the same.\n");
+         $tag = $last_tag;
+      }
+      else
+      {
+         $tag = $new_tag;
+      }
+   }
+   else {
+      # if no existing tag, use the new tag
+      $tag = $new_tag;
+   }
+
+   # only create the new tag if it's actually new
+   unless ($tag eq $last_tag) {
+      print &remote_tag($tag, "branch: $baseline");
+   }
+
+}
+elsif ($prefix) {
+   # fetch all tags/branch references from server
+   my %refs = &remote_refs();
+
+   # find the hash of the commit for the baseline
+   my $branch_ref = $refs{"refs/heads/$baseline"} || '';
+   if ($branch_ref =~ /^(.*?)\s/) {
+      $branch_ref = $1;
+   }
+
+   # see if last commit was tagged with same branch prefix
+   foreach my $ref (sort(keys(%refs))) {
+      print "Ref: $ref\n";
+      if ($ref =~ /^refs\/tags\/($baseline.*?)\^{}$/i) {
+         if ($refs{$ref} eq $branch_ref) {
+            # reuse tag from previous build to prevent needless tagging
+            $tag = $1;
+            $reuse = 1;
+            print "Reusing: $tag\n";
+            last;
+         }
+      }
+   }
+
+   unless ($tag) {
+      $tag = uc($baseline. '_' . $prefix . '_' . sprintf("%04d%02d%02d_%02d%02d", $year+1900, $mon+1, $mday, $hour, $min));
+      print &remote_tag($tag, "branch: $baseline");
+   }
+}
+else {
+   $tag = uc(join('', @tag_parts, sprintf("%04d%02d%02d_%02d%02d", $year+1900, $mon+1, $mday, $hour, $min)));
+   print &remote_tag($tag, "branch: $baseline");
+}
+
+if ($tag) {
+   print "Tag: $tag\n";
+
+   &SetProperty("/myJob/Tag", $tag);
+   &SetProperty("/myJobStep/summary", $reuse ? "Reusing $tag" : $tag);
+   &SetProperty("/myJob/report-urls/$tag", "http://git-ccxsw.rtp.broadcom.com/cgit/git_repos/$repo.git/log/?h=$tag");
+}
+exit 0;
+
+sub SetProperty($$) {
+   my ($property, $value) = @_;
+   my $xPath = undef;
+   eval {
+      $xPath = $ec->setProperty($property, $value);
+   };
+   if ($xPath) {
+      print $xPath->findnodes_as_string("/") . "\n" if ($debug); 
+   }
+   else {
+      print $@;
+   }
+}
+
+sub GetProperty($) {
+   my ($property) = @_;
+   my $xPath = undef;
+   eval {
+      $xPath = $ec->GetProperty($property);
+   };
+   if ($xPath) {
+      print $xPath->findnodes_as_string("/") . "\n" if ($debug); 
+      return $xPath->findvalue('//value')>value();
+   }
+   else {
+      print $@;
+      return '';
+   }
+}
+
+sub remote_tag() {
+   my ($tag, $message) = @_;
+
+   return &remote_cmd("tag -a -m \"$message\" $tag $baseline");
+}
+
+sub remote_tags() {
+   return &remote_cmd('tag -l');
+}
+
+sub remote_refs() {
+   my @refs = &remote_cmd("show-ref --tags --heads --dereference");
+   my %refs = ();
+   foreach my $ref_pair (@refs) {
+      my ($hash, $tag) = split(' ', $ref_pair, 2);
+      $refs{$tag} = $hash;
+   }
+   return %refs;
+}
+
+sub remote_cmd() {
+   my ($cmd) = @_;
+   debug("> $cmd\n");
+   my @data = `ssh svcccxswgit\@git-ccxsw.rtp.broadcom.com 'git --git-dir=/home/svcccxswgit/repositories/$repo.git $cmd' 2>&1`;
+   chomp(@data);
+   
+   my $header = 1;
+   my @out_data;
+   foreach my $line (@data) {
+      next if ($header && $line =~ /^[+|]/);
+      $header = 0;
+      push @out_data, $line;
+   }
+   &debug(map {"$_\n"} @out_data);
+
+   if (wantarray()) {
+      return @out_data;
+   }
+   else {
+      return $out_data[0] || undef;
+   }
+}

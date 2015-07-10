@@ -1,0 +1,19 @@
+#!/usr/local/bin/perl
+use strict;
+
+my $file = shift(@ARGV);
+my $file_contents = `cat $file`;
+
+my $branchname = `git branch 2> /dev/null | sed -e '/^[^*]/d' -e 's/* \(.*\)/(\1)/'`;
+
+if ($branchname =~ /bug\/(.*?)-(.*?)$/ && open(FILE, ">$file")) {
+   my $repo = uc($1);
+   my $task = $2;
+   my $tag = "[$repo-$task]";
+
+   unless ($file_contents =~ /^\[$repo-$task\]/) {
+      print FILE "$tag: $file_contents";
+      close(FILE);
+   }
+}
+exit 0;

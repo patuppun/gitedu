@@ -1,0 +1,3 @@
+[access "BRANCH"]
+        exclusiveGroupPermissions = submit
+        submit = group CD

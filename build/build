@@ -1,0 +1,518 @@
+#!/usr/local/bin/perl
+use strict;     # Perl pragma to restrict unsafe constructs
+use warnings;   # Perl pragma to enable all optional warnings
+use Cwd;
+use File::Path;
+use FindBin qw($Bin $Script);
+use Getopt::Long;
+
+my $tools_dir = "$Bin/..";
+
+require "$tools_dir/perllib/delivery.pm";
+
+# Process arguments
+my $help = 0;
+my $debug = 0;
+
+my $site = '';
+my $jobid = '';
+my $remote_repository = '';
+my $tag = '';
+my $branch = '';
+my $coverity = '';
+my $build = '';
+my $type = 'build';
+my $change = '';
+my $build_path = '';
+my $deliverable_path = '';
+my $keep_source = 0;
+my $keep_view = 'none';
+my $target = '';
+my @set = ('MAKEVER=3.81', "PATH=/tools/nwsoft/bin:/tools/nwsoft/contrib/rack/bin:/tools/bin:$ENV{PATH}");
+my $threads = 1;
+
+GetOptions('help|?' => \$help,
+           'debug' => \$debug,
+           'site=s' => \$site,
+           'jobid=s' => \$jobid,
+           'repo=s' => \$remote_repository,
+           'tag=s' => \$tag,
+           'branch=s' => \$branch,
+           'change=s' => \$change,
+           'build=s' => \$build,
+           'type=s' => \$type,
+           'coverity=s' => \$coverity,
+           'build_path=s' => \$build_path,
+           'deliverable_path=s' => \$deliverable_path,
+           'keep_source' => \$keep_source,
+           'keep_view=s' => \$keep_view,
+           'target=s' => \$target,
+           'set=s' => \@set,
+           'threads=n' => \$threads,
+           );
+
+my @changes = split(/,/, $change);
+my @changes_merged = ();
+
+# Display Subroutines
+sub msg(@) {
+   print scalar(localtime()), ": ", @_;
+}
+sub debug(@) {
+   msg('(DEBUG) ', @_) if ($debug);
+}
+sub run(@) {
+   debug(">",join(' ', @_),"\n");
+   my $rc = system(@_);
+   return $rc >> 8;
+}
+sub setenv($$) {
+   my ($key, $val) = @_;
+   msg("SET $key = $val\n");
+   $ENV{$key} = $val;
+}
+
+if ($help) {
+   msg("Usage: build --site <site> --repo <repo> --build_path <build path> --deliverable_path <deliverable path> (--tag <tag> | --branch <branch>) [build options] ...\n");
+   exit;
+}
+
+# initial values
+my $baseline = $tag || $branch || 'master';
+my $baseline_ref = $baseline;
+
+$site = lc($site);
+
+$jobid ||= $ENV{COMMANDER_JOBID};
+my $remote_server = "svcccxswgit\@git-ccxsw.$site.broadcom.com";
+my $archive_name = "$jobid-${remote_repository}-${baseline}-$build";
+$archive_name =~ s/\//_/g;
+my $full_archive = "$archive_name-full";
+my $source_archive = "$archive_name-source";
+
+msg("Setting environment values...\n") if (@set);
+foreach my $set (@set) {
+   my ($key, $val) = split('=', $set, 2);
+   setenv($key, $val);
+}
+
+if ($debug) {
+   foreach my $key (sort(keys(%ENV))) {
+      print "$key = $ENV{$key}\n";
+   }
+}
+
+# determine which git version we can run
+if ($^O ne 'MSWin32') {
+   my $osid = `OSid`;
+   chomp($osid);
+
+   if ($osid) {
+      my @gitver_available = `ls -1 /tools/oss/packages/$osid/git`;
+      chomp(@gitver_available);
+      my %gitver_available = map {$_ => 1} @gitver_available;
+
+      # if 2.1.0 is available, force that version
+      if (defined($gitver_available{'2.1.0'})) {
+         $ENV{GITVER} = '2.1.0';
+      }
+   }
+}
+
+# display the current Git version for tracability:
+my $gitver = `git --version`;
+if ($gitver =~ /^git version (.*?)$/s) {
+   $gitver = $1;
+}
+my $gitloc = `which git`;
+chomp($gitloc);
+msg("Git Version($gitloc): $gitver\n");
+
+# display the current Git version for tracability:
+my $makever = `make --version`;
+if ($makever =~ /^GNU Make (.*?)$/s) {
+   $makever = $1;
+}
+my $makeloc = `which make`;;
+chomp($makeloc);
+msg("Make Version($makeloc): $makever\n");
+
+unless (-e "$deliverable_path/$build") {
+   msg("Creating $deliverable_path/$build\n");
+   mkpath("$deliverable_path/$build");
+}
+
+if ($coverity && !(-e "$deliverable_path/$build/coverity")) {
+   msg("Creating $deliverable_path/$build/coverity\n");
+   mkpath("$deliverable_path/$build/coverity");
+}
+
+my $cur_dir = `pwd`;
+my $working_dir = $remote_repository =~ /^(.*?)_demo$/ ? "$build_path/$build/$1" : "$build_path/$build/$remote_repository";
+msg("Working Dir: $working_dir\n");
+
+unless (-e $working_dir) {
+   msg("Creating $working_dir\n");
+   mkpath($working_dir);
+}
+
+unless (chdir($working_dir)) {
+   msg("cannot change to $working_dir: $!\n");
+   exit 1;
+}
+
+msg("In Directory: ", `pwd`, "\n");
+system(($^O ne 'MSWin32') ? 'df -h .' : 'dir');
+
+msg("Retrieving source from git repository...\n");
+
+my $root_commit;
+
+# use the git archive method for older git versions
+if ($gitver eq '1.7.6') {
+   if (@changes) {
+      my $change = $changes[0];
+      $baseline_ref = &change_ref($change);
+   }
+   unless (run("git archive --format=tgz --remote=ssh://$remote_server/$remote_repository -o \"$full_archive\" $baseline_ref")) {
+      msg("Extracting source...\n");
+      unless (run("tar -xzf \"$full_archive\"")) {
+
+         if ($keep_source) {
+            msg("Copying source archive...\n");
+            run("mv \"$full_archive\" \"$deliverable_path/$build/$full_archive\"");
+         }
+         else
+         {
+            msg("Removing source archive...\n");
+            run("rm -f \"$full_archive\"");
+         }
+      }
+      else {
+         msg("Error: Could not read code archive.");
+         exit 1;
+      }
+   } 
+   else {
+      msg("Error: Could not extract code from repository.");
+      exit 1;
+   }
+}
+else {
+   my $depth = 1;
+
+   # if only one change specified, then pull initial clone from change branch and not the target branch
+   if (($type eq 'change' || $type eq 'build')) {
+      if (@changes) {
+         if (scalar(@changes) > 1) {
+            msg("Error: Multiple changes specified for change/build.\n");
+            exit 1;
+         }
+         my $change = $changes[0];
+         push @changes_merged, $change;
+
+         if ($change =~ /(\d\d)\//) {
+            $change = "$1/$change";
+         }
+         $baseline_ref = "refs/changes/$change";
+      }
+
+      if (-e '.git') {
+         msg("Reusing existing .git files.\n");
+      }
+      else {
+         if (run("git init .")) {
+            msg("Error: Could not initialize git clone.\n");
+            exit 1;
+         }
+      }
+
+      if (run("git fetch --depth 2 ssh://$remote_server/$remote_repository $baseline_ref")) {
+         msg("Error: Could not fetch code from repository.\n");
+         exit 1;
+      }
+
+      if (run("git checkout FETCH_HEAD")) {
+         msg("Error: Could not checkout code.\n");
+         exit 1;
+      }
+
+      $root_commit = `git log -n1 --pretty=format:%H "HEAD^1"`;
+      chomp($root_commit);
+   }
+   else {
+      # if more than one change to be merged before building
+      unless (-e ".git") {
+         if (run("git init .") || 
+             run("git fetch --depth 2 ssh://$remote_server/$remote_repository $baseline_ref") ||
+             run("git checkout FETCH_HEAD")) {
+            msg("Error: Could not extract code from repository.\n");
+            exit 1;
+         }
+      }
+
+      $root_commit = `git log -n1 --pretty=format:%H HEAD`;
+
+      # cherry pick changes
+      foreach my $change (@changes) {
+         my $rc = run("$Bin/../gerrit/gerrit-cherry-pick ssh://$remote_server/$remote_repository $change");
+         run("git status");
+         if ($rc) {
+            run("$Bin/../gerrit/gerrit-cherry-pick", '--abort');
+            run("git rebase --abort");
+            run("git status");
+            run("git reset --hard HEAD");
+         }
+         else {
+            run("git rebase --continue");
+            run("git status");
+            run("git diff --name-status HEAD^..HEAD");
+            push @changes_merged, $change;
+         }
+      }
+   }
+
+   if ($keep_source) {
+      msg("Archiving source...\n");
+      if (run("tar -czf \"$deliverable_path/$build/$full_archive\" . --exclude .git")) {
+         msg("Error: Could not create code archive.\n");
+         exit 1;
+      }
+   }
+}
+
+run("git diff --name-status $root_commit..HEAD");
+
+if (open(FILE, ">$deliverable_path/$build/manifest.txt")) {
+   print FILE "project: $remote_repository\n";
+   print FILE "baseline: $baseline_ref\n";
+   print FILE "change: ", join(' ', @changes_merged), "\n";
+   close(FILE);
+}
+
+# generate version file if build is from a tag
+my ($rel_num, $ver_num, $maint_num, $build_num) = (0,0,0,0);
+
+# daily build tag
+if ($baseline eq uc($baseline) && $baseline =~ /(\d{2})(\d{2})_(\d+?)$/) {
+   $rel_num = substr($baseline, 0, 1);
+   $ver_num = int($1);
+   $maint_num = int($2);
+   $build_num = int($3);
+}
+# release tag
+elsif ($baseline eq uc($baseline) && $baseline =~ /(\d+)\.(\d+)\.(\d+)\.(\d+)$/) {
+   $rel_num = int($1);
+   $ver_num = int($2);
+   $maint_num = int($3);
+   $build_num = int($4);
+}
+
+msg("Version: R=$rel_num, V=$ver_num, M=$maint_num, B=$build_num\n");
+if (open(FILE, ">$working_dir/version.cfg")) {
+   print FILE "export REL_NUM=$rel_num\n";
+   print FILE "export VER_NUM=$ver_num\n";
+   print FILE "export MAINT_NUM=$maint_num\n";
+   print FILE "export BUILD_NUM=$build_num\n";
+   close(FILE);
+}
+
+my %cfg;
+# parse buildlist configuration
+if (open(FILE, "<buildlist.ini")) {
+  my @buildlist_ini = <FILE>;
+  chomp(@buildlist_ini);
+  %cfg = parse_inifile(@buildlist_ini);
+  close(FILE);
+}
+unless (scalar(keys(%cfg))) {
+   msg("Error: Could not parse buildlist.ini file.\n");
+}
+
+# only create source archive if this is a tagged build or keep-source is specified
+if ($baseline eq uc($baseline) || $keep_source) {
+   # create package archive
+
+   my $package_archive = "$deliverable_path/$build/$source_archive";
+
+   # Determine directories used in the build
+   my @dirs;
+   foreach my $sec ('default', $build) {
+      if (defined($cfg{$sec}->{dirs})) {
+         my $dirs = $cfg{$sec}->{dirs};
+         $dirs =~ s/\n/;/gs;
+         $dirs =~ s/,/;/gs;
+
+         push @dirs, grep {$_} split(';', $dirs);
+      }
+   }
+
+   if (@dirs) {
+      # Add main Makefile and version.cfg file if exists;
+      push @dirs, 'Makefile', 'version.cfg';
+
+      my $include = join(' ', grep {$_ !~ /^\!/} @dirs);
+      my $exclude = join(' ', map {"--exclude $_"} grep {$_ =~ /^\!/} @dirs);
+      msg("Archiving customer source archive...\n");
+      run("tar -cz -C \"$working_dir/\" -f \"$package_archive\" $include $exclude --exclude .git");
+   }
+}
+
+# Update environment variables
+if (defined($cfg{$build}->{set})) {
+   foreach my $pair (split("\n", $cfg{$build}->{set})) {
+      next unless ($pair);
+      my ($key, $val) = split("=", $pair);
+      setenv($key,$val);
+   }
+}
+
+my $rc = 0;
+chdir("$working_dir");
+
+# run any necessary pre-build commands
+if (defined($cfg{$build}->{cmd})) {
+   foreach my $cmd (split("\n", $cfg{$build}->{cmd})) {
+      $rc = run($cmd);
+   }
+}
+
+my $chdir = $cfg{$build}->{'build_path'};
+chdir($chdir) if ($chdir);
+
+# determine build command
+my $thread_opt = $threads > 1 ? "-j $threads" : '';
+my $build_cmd = $cfg{$build}->{build_cmd};
+unless ($build_cmd) {
+   my $options = $target || $cfg{builds}->{$build} || $cfg{$build}->{target} || $cfg{$build}->{build} || 'all';
+   msg("Selecting '$options' as make target.\n");
+   $build_cmd = "make $thread_opt $options";
+}
+
+# determine rebuild command if configured
+my $rebuild_cmd = $cfg{$build}->{rebuild_cmd} || $cfg{$build}->{build_cmd};
+unless ($rebuild_cmd) {
+   my $options = $cfg{$build}->{rebuild_target} || $cfg{$build}->{target} || 'all';
+   msg("Selecting '$options' as rebuild target.\n");
+   $rebuild_cmd = "make $thread_opt $options";
+}
+
+if ($coverity eq 'complete') {
+   my $project = uc($remote_repository);
+   #remove _demo from project name when
+   $project =~ s/_demo//i;
+
+   msg("Starting complete Coverity build for $project - $build...\n");
+
+   my @args = ("--emit", 
+               "--output \"$working_dir\"", 
+               "--report-output \"$deliverable_path/$build/coverity/\"",
+               "--project \"$project\"",
+               "--stream \"$project $branch $build\"",
+               "--target \"$build\"",
+               "--version \"$baseline\"",
+               ($threads > 1) ? "--threads $threads" : '',
+               );
+
+   $rc = run("$Bin/../coverity/coverity-build-stream.pl @args $build_cmd");
+   run("cp $working_dir/cvbuild/build-log.txt $deliverable_path/$build/coverity/");
+}
+else {
+   msg("Compiling build...\n");
+   $rc = run($build_cmd);
+   unless ($rc) {
+      msg("Archiving deliverables...\n");
+
+      setenv('INSTALL_DIR', "$deliverable_path/$build");
+      setenv('ARCHIVE_NAME', $archive_name);
+      setenv('BUILD_NAME', $build);
+      setenv('TAG', $tag) if ($tag);
+
+      $chdir = $cfg{$build}->{'install_path'};
+      chdir($chdir) if ($chdir);
+
+      my $cmd = $cfg{$build}->{install_cmd};
+      unless ($cmd) {
+         my $install_target = $cfg{$build}->{install} || 'install';
+         msg("Selecting '$install_target' for install target.\n");
+
+         $cmd = "make $install_target";
+      }
+
+      $rc = run($cmd);
+
+      if ($^O ne 'MSWin32' && $coverity eq 'partial' && @changes) {
+         chdir("$working_dir");
+         my $project = uc($remote_repository);
+         #remove _demo from project name
+         $project =~ s/_demo//i;
+
+         msg("Starting partial Coverity build for $project - $build...\n");
+
+         # touch all files changed
+         debug("git diff --name-only HEAD..$root_commit\n");
+
+         my @files_changed = `git diff --name-only HEAD..$root_commit`;
+         chomp(@files_changed);
+
+         my $file_count = 0;
+         foreach my $file (@files_changed) {
+            debug(">$file\n");
+            # only touch files with relative paths that don't contain '..'
+            next if ($file =~ /^\// || $file =~ /\/\.\./);
+            # only touch files that exist
+            next unless (-e $file);
+
+            msg("Touching file: $file\n");
+            system("touch $file");
+            $file_count++;
+         }
+
+         if ($file_count) {
+            # resubmit build using coverity this time
+            my @args = ("--output \"$working_dir\"", 
+                        "--report-output \"$deliverable_path/$build/coverity/\"",
+                        "--project \"$project\"",
+                        "--stream \"$project $branch $build\"",
+                        "--target \"$build\"",
+                        "--version \"$baseline\"",
+                        ($threads > 1) ? "--threads $threads" : '',
+                        map {"--scan-path $_"} @files_changed,
+                        );
+
+            $rc = run("$Bin/../coverity/coverity-build-stream.pl @args $rebuild_cmd");
+            run("cp $working_dir/cvbuild/build-log.txt $deliverable_path/$build/coverity/");
+#            run("cp $working_dir/cvbuild/scan-results.json $deliverable_path/$build");
+#            run("cp $working_dir/cvbuild/scan-report.json $deliverable_path/$build");
+         }
+         else {
+            msg("No files changed so Coverity Scan skipped.\n");
+         }
+      }
+
+      msg("Archiving buildlist.ini file.\n");
+      system("cp $working_dir/buildlist.ini $deliverable_path/$build/");
+
+      if (-d "$working_dir/test") {
+         msg("Archiving testscripts.\n");
+         run("cp -r $working_dir/test $deliverable_path/$build/");
+      }
+   }
+}
+# change back to starting directory
+chdir($cur_dir);
+
+unless ($keep_view eq 'all' || ($keep_view eq 'failed' && $rc) || ($keep_view eq 'passed' && !$rc)) {
+   msg("Removing build view...\n");
+   run("rm -rf $build_path/$build");
+
+   if (opendir(DIR, $build_path)) {
+      my @files = grep {$_ !~ /^\./} readdir(DIR);
+      closedir(DIR);
+      unless (@files) {
+         msg("Removing parent directory...\n");
+         run("rm -rf $build_path");
+      }
+   }
+}
+exit $rc;

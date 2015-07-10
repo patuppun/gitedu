@@ -1,0 +1,15 @@
+#!/usr/local/bin/perl
+use CGI qw( :standard );
+use FindBin qw($Bin $Script);
+
+my $tools_dir = "$Bin/..";
+
+my @page = ("Content-type: text/html\n\n",
+            "\n\n<!-- end of header -->\n\n",
+            "<pre>\n",
+            `find $tools_dir`,
+            "</pre>\n",
+            "\n\n<!-- start of footer -->\n\n",
+           );
+
+print @page;

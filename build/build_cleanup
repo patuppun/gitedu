@@ -1,0 +1,68 @@
+#!/usr/local/bin/perl
+use strict;     # Perl pragma to restrict unsafe constructs
+use warnings;   # Perl pragma to enable all optional warnings
+use Cwd;
+
+my $tools_dir;
+BEGIN 
+{
+   my $script = $0;
+   $script =~ s/\\/\//g;  #convert back to forward slashes to support Windows
+   
+   if ($script =~ /^(.*?\/tools\/ccxsw\/contrib)\// || $script =~ /^(.*?\/tools)\//)
+   {
+      $tools_dir = $1;
+   }
+   else
+   {
+      $tools_dir = "../..";
+      $tools_dir = "$1/$tools_dir" if ($script =~ /^(.*)\//);
+   }
+   print "Tools Dir: $tools_dir\n";
+}
+use Getopt::Long;
+
+# Process arguments
+my $help = 0;
+my $debug = 0;
+
+GetOptions('help|?' => \$help,
+           'debug' => \$debug,
+           );
+
+# Display Subroutines
+sub msg(@) {
+   print scalar(localtime()), ": ", @_;
+}
+sub debug(@) {
+   msg('(DEBUG) ', @_) if ($debug);
+}
+sub run(@) {
+   msg(">",@_,"\n");
+   my $rc = system(@_);
+   return $rc >> 8;
+}
+
+my $build_dir = shift(@ARGV);
+my $build  = shift(@ARGV);
+
+if (-e "$build_dir/$build") {
+   msg("Removing directory...\n");
+   run("rm -rf $build_dir/$build");
+   if (is_dir_empty("$build_dir")) {
+      run("rm -rf $build_dir");
+   }
+}
+
+sub is_dir_empty {
+    my ($dir) = @_;
+
+    opendir my $h, $dir
+        or die "Cannot open directory: '$dir': $!";
+
+    while ( defined (my $entry = readdir $h) ) {
+        return unless $entry =~ /^[.][.]?\z/;
+    }
+
+    return 1;
+}

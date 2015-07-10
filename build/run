@@ -1,0 +1,430 @@
+#!/export/electriccloud/electriccommander/bin/ec-perl
+use strict;     # Perl pragma to restrict unsafe constructs
+use warnings;   # Perl pragma to enable all optional warnings
+use ElectricCommander;
+use Cwd;
+use File::Path;
+use Data::Dumper;
+use FindBin qw($Bin $Script);
+use lib "$Bin/../perllib";
+use Getopt::Long qw(:config pass_through);
+
+my $tools_dir = "$Bin/..";
+
+# Process arguments
+my $help = 0;
+my $debug = 0;
+
+my $storage = '';
+my $repo = '';
+my $branch = '';
+my $tag = '';
+my $change = '';
+my $build = '';
+my $coverity = '';
+my $keepsource = 0;
+my $keepview = 'none';
+my $site = 'rtp';
+my $type = 'build';
+my $jobid = '';
+my $cleanup = 1;
+my $threads = 1;
+
+
+GetOptions('help|?'        => \$help,
+           'debug'         => \$debug,
+           'storage=s'     => \$storage,
+           'repo=s'        => \$repo,
+           'branch=s'      => \$branch,
+           'tag=s'         => \$tag,
+           'change=s'      => \$change,
+           'build=s'       => \$build,
+           'coverity=s'    => \$coverity,
+           'keep_source'   => \$keepsource,
+           'keep_view=s'   => \$keepview,
+           'site=s'        => \$site,
+           'type=s'        => \$type,
+           'jobid=s'       => \$jobid,
+           'cleanup!'      => \$cleanup,
+           'threads=n'     => \$threads,
+           );
+
+my $lsf_site = lc($site);
+my %lsf_queue_map = ('rtp' => 'rdu-Bnwsoft',
+                     'hyd' => 'hyd-Bnwsoft',
+                     'and' => 'mht-ccxsw',
+                    );
+my $lsf_queue = $lsf_queue_map{$lsf_site} || "${lsf_site}-ccxsw";
+
+my $debug_opt = $debug ? '--debug' : '';
+$jobid ||= $ENV{COMMANDER_JOBID};
+
+# clean up change to be the correct format
+if ($change =~ /^(.*?):/) {
+   # remove change comment if present
+   $change = $1;
+}
+
+my $baseline = $tag || $branch;
+                               
+# Display Subroutines
+sub msg(@) {
+   print scalar(localtime()), ": ", @_;
+}
+sub debug(@) {
+   msg('(DEBUG) ', @_) if ($debug);
+}
+sub run(@) {
+   msg(">",@_,"\n");
+   my $rc = system(@_);
+   return $rc >> 8;
+}
+
+if ($help) {
+   msg("Usage: run --site <site> [--branch <build>] [--tag <build>] [--change <change>] --build <build> [--storage <storage dir>] [build options] ...\n");
+   exit;
+}
+
+&debug("debug    = $debug\n");
+&debug("repo     = $repo\n");
+&debug("branch   = $branch\n");
+&debug("tag      = $tag\n");
+&debug("change   = $change\n");
+&debug("type     = $type\n");
+&debug("threads  = $threads\n");
+&debug("storage  = $storage\n");
+&debug("build    = $build\n");
+&debug("coverity = $coverity\n");
+&debug("site     = $site\n");
+
+my $baseline_ref = $baseline;
+
+my @changes = split(',', $change);
+if (@changes == 1 && $change =~ /(\d\d)\//) {
+   $baseline_ref = "refs/changes/$1/$change";
+}
+
+# load build configuration
+my @buildlist_ini = &remote_file($site, $repo, $baseline_ref, 'buildlist.ini');
+@buildlist_ini = &remote_file($site, $repo, 'master', 'buildlist.ini') unless (@buildlist_ini);
+my %cfg = &parse_inifile(@buildlist_ini);
+
+my $requires = $cfg{$build}->{requires} || '';
+$requires ||= $cfg{default}->{requires};
+
+my $machine = $cfg{$build}->{machine} || '';
+$machine ||= $cfg{default}->{machine};
+
+if ($tag) {
+   # load override information for specific labels
+   my %overrides;
+   if (open(FILE, "<$tools_dir/build/buildlist_override.ini")) {
+      print "Loading overrides...\n";
+      my @lines = <FILE>;
+      chomp(@lines);
+      %overrides = &parse_inifile(@lines);
+   }
+
+   if (defined($overrides{$tag})) {
+      $requires = $overrides{$tag}->{requires};
+   }
+   elsif (defined($overrides{"$tag $build"})) {
+      $requires = $overrides{"$tag $build"}->{requires};
+   }
+}
+
+&debug("requires = $requires\n");
+&debug("machine  = $machine\n");
+
+my $build_path = "/tmp/${jobid}_$storage";
+my $deliverable_path = "/projects/ccxsw_rel/deliverables/$repo/${jobid}_$storage";
+mkpath($deliverable_path);
+&debug("deliverables         = $deliverable_path\n");
+
+my $ec = ElectricCommander->new();
+$ec->abortOnError(0);  # don't abort the job if we have trouble connecting to EC
+my $deliverable_uri = "$deliverable_path/$build";
+$deliverable_uri =~ s/^.*\/deliverables/\/deliverables/;
+&SetProperty("/myJob/report-urls/$build", $deliverable_uri);
+&SetProperty("/myJobStep/deliverables", "$deliverable_path/$build");
+
+&SetProperty("/myJobStep/coverity", $coverity);
+&SetProperty("/myJobStep/threads", $threads);
+
+# determine previous job completion times
+my @filterList;
+push (@filterList, {"propertyName" => "status",
+                    "operator" => "equals",
+                    "operand1" => "completed"});
+push (@filterList, {"propertyName" => "outcome",
+                    "operator" => "equals",
+                    "operand1" => "success"});
+push (@filterList, {"propertyName" => "stepName",
+                    "operator" => "equals",
+                    "operand1" => $build});
+push (@filterList, {"propertyName" => "coverity",
+                    "operator" => "equals",
+                    "operand1" => $coverity});
+push (@filterList, {"propertyName" => "threads",
+                    "operator" => "equals",
+                    "operand1" => $threads});
+push (@filterList, {"propertyName" => "duration",
+                    "operator" => "greaterThan",
+                    "operand1" => 0});
+
+print "Searching for previous builds..\n";
+print "  status = completed\n";
+print "  outcome = success\n";
+print "  stepName = $build\n";
+print "  coverity = $coverity\n";
+print "  threads = $threads\n";
+print "  duration >= 0\n";
+
+#  Find the last 10 completed jobsteps of the same build
+my $xPath = $ec->findObjects("jobStep",
+                             {maxIds        => "10",
+                              numObjects    => "10",
+                              filter        => \@filterList,
+                              sort          => [{propertyName => 'jobStepId', order => 'descending'}],
+                             });
+# Extract the elapsed time from each job
+my $completedJobCount = 0;
+my $elapsedTimeSum = 0;
+
+my $nodeset = $xPath->find('//jobStep');
+foreach my $node ($nodeset->get_nodelist)
+{
+  my $jobstepid = $xPath->findvalue('jobStepId', $node);
+  print  "Previous job step: $jobstepid\n";
+
+  my %properties = &GetProperties({jobStepId => $jobstepid});
+  #my $elapsedTime = &GetProperty('duration', {jobStepId => $jobstepid});
+  if ($properties{duration}) {
+     $completedJobCount++;
+     print "Previous job $completedJobCount: $properties{duration}\n";
+     $elapsedTimeSum += $properties{duration};
+  }
+}
+print "Completed Jobs: $completedJobCount\n";
+my $average_time = $completedJobCount ? int($elapsedTimeSum / $completedJobCount) : 0;
+print "Average time: $average_time\n";
+
+my $start_time = time();
+my $check_time = $start_time;
+my $completion = -1;
+my $server = '';
+
+my $submitted = 0;
+my $started = 0;
+
+my $cleanup_cmd = "";
+my $cleanup_opt = "";
+if ($cleanup) {
+    $cleanup_opt = "-Ep \"$tools_dir/build/build_cleanup $build_path $build\"";
+}
+my $require_opt = $requires ? "-R \"$requires\"" : '';
+my $machine_opt = $machine ? "-m \"$requires\"" : '';
+
+my $repo_opt = $repo ? "--repo \"$repo\"" : '';
+my $coverity_opt = $coverity ? "--coverity $coverity" : '';
+my $keepsource_opt = $keepsource ? "--keep_source" : '';
+my $keepview_opt = $keepview ? "--keep_view \"$keepview\"" : '';
+my $threads_opt = $threads ? "--threads $threads" : '';
+
+$require_opt = "$require_opt -R \"span[hosts=1]\" -n $threads";
+
+my $args = "-I -q $lsf_queue $machine_opt $require_opt $cleanup_opt $tools_dir/build/build --jobid \"$jobid\" $debug_opt --site \"$site\" --build_path \"$build_path\" --deliverable_path \"$deliverable_path\" --branch \"$branch\" --tag \"$tag\" --change \"$change\" --build \"$build\" --type \"$type\" $repo_opt $coverity_opt $keepsource_opt $keepview_opt $threads_opt".join(' ', map {$_ eq '' ? "\"\"" : $_} @ARGV);
+my $lsf_jobid = 0;
+while ($submitted == 0) {
+   print ">/tools/bin/bsub $args\n";
+   if (open(FH, "/tools/bin/bsub $args 2>&1|")) {
+      $submitted = 1;
+      select(FH);
+      $| = 1;
+      select(STDOUT);
+      $| = 1;
+   
+      &SetProperty('/myJobStep/summary', "Submitted");
+      my $status = '';
+      while (my $line = <FH>) {
+         print $line;
+         if ($lsf_jobid == 0 && $started == 0) {
+            if ($line =~ /Job not submitted/) {
+               $submitted = 0;
+               last;
+            }
+            if ($line =~ /Job \<(\d+)\>/) {
+               $lsf_jobid = $1;
+               $status = "Submitted ($lsf_jobid)";
+               &msg("$status\n");
+               &SetProperty('/myJobStep/summary', $status);
+            }
+         }
+         if ($started == 0) {
+            if ($line =~ /<<Waiting/) {
+               $status = "Pending ($lsf_jobid)";
+               &msg("$status\n");
+               &SetProperty('/myJobStep/summary', $status);
+            }
+            if ($line =~ /<<Starting on (.*?)>>/) {
+               $server = $1;
+               $status = "Running ($server:$lsf_jobid)";
+               &msg("$status\n");
+               &SetProperty('/myJobStep/summary', $status);
+               $started = 1;
+               $start_time = time();
+            }
+         }
+         if ($started == 1 && $average_time) {
+            if (time() > $check_time) {
+               my $percent = int(100*(time() - $start_time)/$average_time);
+               print 'Job completion: 100*'.(time() - $start_time)." / $average_time = $percent\n" if ($debug);
+               if ($percent >= $completion) {
+                  # if this build is taking longer than average
+                  if ($percent >= 100) {
+                     &SetProperty('/myJobStep/summary', "$status ...");
+                  }
+                  else {
+                     #my $graph = "[".(($percent % 10) x '=').(10-($percent % 10) x '-')."]";
+                     &SetProperty('/myJobStep/summary', "$status \%$percent -".&dhms($average_time - (time() - $start_time)));
+                  }
+                  $completion = $percent;
+               }
+            }
+            $check_time = time();
+         }
+      }
+      close(FH);
+
+      # check if we actually submitted a job
+      if ($submitted) {
+         my $duration = time() - $start_time;
+         print "[Finished $duration]\n" if ($debug);
+      
+         my $rc = $? >> 8;
+      
+         &SetProperty('/myJobStep/summary', $rc ? "exit code $rc ($server:$lsf_jobid)" : "Success ($server:$lsf_jobid)");
+         &SetProperty('/myJobStep/duration', $duration);
+         exit $rc;
+      }
+      else {
+         &SetProperty('/myJobStep/summary', "Waiting for LSF");
+         print "Waiting for LSF system...\n";
+         sleep(5);
+      }
+   }
+}
+# remove view
+&run($cleanup_cmd);
+
+exit 1;
+
+sub SetProperty($$) {
+   my ($property, $value) = @_;
+   my $xPath = undef;
+   eval {
+      $xPath = $ec->setProperty($property, $value);
+   };
+   if ($xPath) {
+      #print $xPath->findnodes_as_string("/") . "\n" if ($debug); 
+   }
+   else {
+      print $@;
+   }
+}
+
+sub GetProperties($;$) {
+   my ($args) = @_;
+   my $xPath = undef;
+
+   my %properties;
+
+   eval {
+      $xPath = $ec->getProperties($args);
+   };
+   if ($xPath) {
+      print $xPath->findnodes_as_string("/") . "\n" if ($debug); 
+      foreach my $node ($xPath->findnodes('//property')) {
+         my $key = $xPath->findvalue('propertyName', $node)->value();
+         my $val = $xPath->findvalue('value', $node)->value();
+         print "$key = $val\n" if ($debug);
+         $properties{$key} = $val;
+      }
+      return %properties;
+   }
+   else {
+      print $@;
+      return ();
+   }
+}
+
+sub GetProperty($;$) {
+   my ($property, $args) = @_;
+   my $xPath = undef;
+
+
+   eval {
+      $xPath = $ec->getProperty($property, $args);
+   };
+   if ($xPath) {
+      print $xPath->findnodes_as_string("/") . "\n" if ($debug); 
+      return $xPath->findvalue('//value')->value();
+   }
+   else {
+      print $@;
+      return '';
+   }
+}
+
+sub dhms($) {
+   my ($sec) = @_;
+   my $min = sprintf($sec / 60);
+   $sec %= 60;
+   my $hour = int($min / 60);
+   $min %= 60;
+   my $day = int($hour / 24);
+   $hour %= 24;
+
+   $min = "0$min" if ($min < 10);
+   $sec = "0$sec" if ($sec < 10);
+
+   my @parts;
+   push @parts, "${day}d " if ($day);
+   push @parts, "${hour}:${min}:${sec}";
+   return join('', @parts);
+}
+
+sub remote_file() {
+   my ($site, $repo, $baseline, $file) = @_;
+   msg("Fetch '$file' from repo $site:$repo $baseline\n") if ($debug);
+   my @data = `ssh svcccxswgit\@git-ccxsw.$site.broadcom.com 'git --git-dir=/home/svcccxswgit/repositories/$repo.git show $baseline:$file' 2>&1`;
+   chomp(@data);
+   
+   my $header = 1;
+   my @out_data;
+   foreach my $line (@data) {
+      next if ($header && $line =~ /^[+|]/);
+      $header = 0;
+      push @out_data, $line;
+   }
+   return @out_data;
+}
+
+sub parse_inifile(@) {
+   my (@lines) = @_;
+   my %ini;
+   my $section;
+   foreach my $line (@lines) {
+      next if ($line =~ /^\s*#/ || $line =~ /^\s*$/);
+      if ($line =~ /^(.*?)=(.*?)$/) {
+         print "$section.$1=$2\n";
+         $ini{$section}->{$1} = defined($ini{$section}->{$1}) ? "$ini{$section}->{$1}\n$2" : $2;
+      }
+      if ($line =~ /^\s*\[(.*?)\]\s*$/) {
+         $section = $1;
+         $ini{$section} ||= {};
+      }
+   }
+   return %ini;
+}
+

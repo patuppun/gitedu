@@ -1,0 +1,30 @@
+<plugin-template title="Client Security Package">
+  <init>
+    <element type="select" uniquename="Branch" label="Branch" src="$[tools_path]/build/template/baseline.pl" arg="site=RTP,repo=client_security_firmware,type=heads" onchange="UpdateForBranch"/>
+  </init>
+  <UpdateForBranch value="">
+    <remove>
+      <element type="select" uniquename="Branch"/>
+      <element type="select" uniquename="Firmware Build"/>
+      <element type="select" uniquename="Host Build"/>
+      <element type="select" uniquename="CVUSB Build"/>
+      <element type="select" uniquename="WBF Build"/>
+      <element type="checkbox" uniquename="Send to PQA"/>
+    </remove>
+    <add>
+      <element type="select" uniquename="Branch" label="Branch" src="$[tools_path]/build/template/baseline.pl" arg="site=RTP,repo=client_security_firmware,type=heads" onchange="UpdateForBranch"/>
+    </add>
+  </UpdateForBranch>
+  <UpdateForBranch>
+    <remove>
+    </remove>
+    <add>
+      <element type="select" uniquename="Firmware Build" label="Firmware Build" src="$[tools_path]/build/template/deliverable.pl" arg="branch={Branch},type=firmware"/>
+      <element type="select" uniquename="Host Build" label="Host Build" src="$[tools_path]/build/template/deliverable.pl" arg="branch={Branch},type=host"/>
+      <element type="select" uniquename="CVUSB Build" label="CVUSB Build" src="$[tools_path]/build/template/deliverable.pl" arg="branch={Branch},type=cvusb"/>
+      <element type="select" uniquename="WBF Build" label="WBF Build" src="$[tools_path]/build/template/deliverable.pl" arg="branch={Branch},type=wbf"/>
+      <element type="checkbox" uniquename="Send to PQA" label="Send to PQA"/>
+    </add>
+  </UpdateForBranch>
+</plugin-template>
+

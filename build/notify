@@ -1,0 +1,1222 @@
+#!/export/electriccloud/electriccommander/bin/ec-perl
+use strict;     # Perl pragma to restrict unsafe constructs
+use warnings;   # Perl pragma to enable all optional warnings
+use Getopt::Long;
+use ElectricCommander;
+use XML::XPath;
+use Data::Dumper;
+use JSON;
+use FindBin qw($Bin $Script);
+
+my $tools_dir = "$Bin/..";
+
+my $snip = "\n---SNIP---\n\n";
+
+my $cmdr = ElectricCommander->new();
+$cmdr->abortOnError(0);  # don't abort the job if we have trouble connecting to EC
+
+my %args = &get_args($cmdr);
+
+if ($args{Change} =~ /^(.*?):/) {
+   # if change includes summary, remove it
+   $args{Change} = $1;
+}
+
+my $help = 0;
+my $debug = $args{debug} || 0;
+
+GetOptions('help|?' => \$help,
+           'debug' => \$debug,
+           );
+
+my $debug_opt = $debug ? '--debug' : '';
+
+my $hostname = `hostname`;
+chomp($hostname);
+my $domainname = `domainname`;
+chomp($domainname);
+
+my %domains = {'irvine' => 'irv',
+               'mhtb'   => 'and'};
+
+$domainname = $domains{$domainname} || $domainname;
+
+my $host = "$hostname.$domainname.broadcom.com";
+
+# Display Subroutines
+sub msg(@) {
+   print scalar(localtime()), ": ", @_;
+}
+sub debug(@) {
+   msg('(DEBUG) ', @_) if ($debug);
+}
+
+my %jobinfo = &get_jobinfo($cmdr);
+my $job = $jobinfo{$ENV{COMMANDER_JOBID}};
+
+my $report_sheet = 0;
+foreach my $property (@{$job->{propertySheet}->{property}}) {
+   if ($property->{propertyName} eq 'report-urls') {
+      $report_sheet = $property->{propertySheetId};
+      last;
+   }
+}
+print "job: ", Dumper($job);
+
+my %report_urls;
+if ($report_sheet) {
+   %report_urls = &GetProperties({propertySheetId => $report_sheet});
+}
+my @urls;
+foreach my $link (sort(keys(%report_urls))) {
+   my $url = $report_urls{$link};
+   push @urls, "<a href=\"" . (($url =~ /^\//) ? "http://$host$url" : $url) . "\">$link</a>";
+}
+my $urls = join('<br>',@urls);
+
+print "report_urls: ", Dumper(\%report_urls);
+
+my @html;
+my @logs_html;
+
+my $status = $job->{combinedStatus}->{status} eq 'running_success' ? 'success' : 'error';
+my $completed = $job->{abortStatus} || "COMPLETED with $status";
+my $subject = "Job: '$job->{jobName}' from procedure: '$job->{procedureName}' $completed";
+my $style = <<EOF;
+    <style type="text/css">
+        body { font-family: Tahoma, Helvetica, sans-serif; background: #ffffff; color: #000000; font-size: 11px; margin: 5px 0px 0px 5px; }
+        
+        /* Styles for the outcome area at the top of the report. */
+
+        .outcome table.outcomeOk { background: #bef0bc; }
+        .outcome table.outcomeError { background: #f7cfcf; }
+        .outcome table.outcomeWarning { background: #fff2bf; }
+        .outcome td { padding: 5px; }
+        .outcome td.outcome { font-size: 14px; font-weight: bold; }
+        .outcome td.viewOnline a { font-size: 12px; font-weight: bold; text-decoration: none; border-bottom: dotted 1px; }
+        
+        /* Styles for the main summary table. */
+
+        div.summary { margin: 20px 0px 0px 0px; }
+        .summary table { background: #ffffff; }
+        .summary td { padding: 3px 15px 3px 5px; vertical-align: top; white-space:nowrap; }
+        .summary .header td { background: #c8cacf; font-weight: bold; }
+        td.labelEven { background: #f5f5f7; font-weight: bold; }
+        td.labelOdd { background: #ffffff; font-weight: bold; }
+        .summary td.success { background: #bef0bc; }
+        .summary td.warning { background: #fff2bf; }
+/*        .summary td.warning a { text-decoration: none; border-bottom: dotted 1px; }*/
+        .summary td.error { background: #f7cfcf; }
+/*        .summary td.error a { text-decoration: none; border-bottom: dotted 1px; }*/
+        .summary td.noData { background: #dfe1e7; color: #666666; }
+        
+        /* Styles for section headings. */
+
+        div.heading { margin: 15px 0px 0px 0px; border-top: solid 1px #d1d1d1; width: 98%; padding-top: 5px; }
+        span.headerText { padding-left: 5px; font-size: 12px; font-weight: bold; color: #555e7e; }
+        
+        /* Styles for simple striped tables like those in the
+         * General Information section.
+         */
+         
+        div.stripes { margin: 10px 0px 0px 0px; }
+        .stripes tr.odd { background: #f5f5f7; }
+        .stripes tr.even { background: #ffffff; }
+        .stripes td { padding: 4px 5px 4px 5px; }
+        .stripes td.label { font-weight: bold; width: 20%; }
+        .stripes td.error { color: #cc0000; }
+        .stripes td.warning { color: #7c5c17; }
+
+        /* Styles for diagnostic messages. */
+       
+        div.diagnostics { margin: 10px 0px 0px 0px; } 
+        .diagnostics td.stepHeader { padding: 8px 5px 8px 5px; background: #f5f5f7; }
+        .diagnostics span.stepName { font-weight: bold; }
+        .diagnostics td { padding: 5px 5px 5px 5px; }
+        .diagnostics td.indexError { padding: 15px 5px 0px 5px; font-weight: bold; color: #cc0000; }
+        .diagnostics td.indexWarning { padding: 15px 5px 0px 5px; font-weight: bold; color: #7c5c17; }
+        .diagnostics td.indexMiscellaneous { padding: 15px 5px 0px 5px; font-weight: bold; }
+        .diagnostics td.logLink { color: #999999; padding-bottom: 10px; }
+        .diagnostics td.logLink a { text-decoration: none; border-bottom: dotted 1px; color: #333333; }
+        .diagnostics td.logLink a:hover { color: #cc6600; }
+        .diagnostics td.logExtract pre { padding: 8px 15px 8px 15px; margin: 0px; border: 1px dashed #cccccc; 
+                                         font-family: Courier New, Courier, monospace; font-size: 12px; }
+        
+        /* Styles for updates section. */
+        
+        div.updates { margin-top: 10px; }
+        div.updates td pre { padding: 8px 15px 8px 15px; margin: 0px 5px 0px 5px; border: 1px dashed #cccccc; 
+                             font-family: Courier New, Courier, monospace; font-size: 12px;
+        }
+       
+        /* Overall colors. */
+       
+        a { color: #000000; }
+        a:hover { color: #cc6600; }
+    </style>
+EOF
+
+push @html, <<EOF;
+<title>$subject - Commander Notification</title>
+<head>
+$style
+</head>
+<body>
+EOF
+
+my $abortstatus = $job->{abortStatus} || '';
+$abortstatus .= " by $job->{abortUser}" if ($abortstatus);
+my $elapsedTime = &dhms($job->{elapsedTime}/1000);
+my $outcomeClass = ($status eq 'success') ? 'outcomeOk' : 'outcomError';
+my $errorCode = $job->{errorCode} || '';
+my $errorMessage = $job->{errorMessage} || '';
+
+push @html, <<EOF;
+  <!-- Start outcome -->
+  <div class="outcome">
+    <table class="$outcomeClass" cellspacing="0" width="98%">
+      <tr>
+        <td class="outcome"><a href="http://$host/commander/jobDetails.php?jobId=$job->{jobId}">$subject</a></td>
+      </tr>
+    </table>
+  </div>
+  <!-- End outcome -->
+
+  <!-- Start of summary table -->
+  <div class="summary">
+    <table cellspacing="0">
+      <tr>
+        <td>
+          <table cellspacing="1">
+            <tr class="header"><td>Job Attribute</td><td>Job Attribute Value</td></tr>
+            <tr><td class="success">Project</td><td class="success">$job->{projectName}</td></tr>
+            <tr><td class="success">Procedure</td><td class="success">$job->{procedureName}</td></tr>
+            <tr><td class="success">Started</td><td class="success">$job->{start}</td></tr>
+            <tr><td class="success">Completed</td><td class="success">$job->{modifyTime}</td></tr>
+            <tr><td class="success">Directory Name</td><td class="success">$job->{directoryName}</td></tr>
+            <tr><td class="success">Launched by User</td><td class="success">$job->{launchedByUser}</td></tr>
+            <tr><td class="success">Outcome</td><td class="$status">$status</td></tr>
+            <tr><td class="success">Error Code</td><td class="$status">$errorCode</td></tr>
+            <tr><td class="success">Error Message</td><td class="$status">$errorMessage</td></tr>
+            <tr><td class="success">Elapsed Time</td><td class="success">$elapsedTime</td></tr>
+            <tr><td class="success">Abort Status</td><td class="$status">$abortstatus</td></tr>
+          </table>
+        </td>
+        <td>$urls</td>
+      </tr>
+    </table>
+  </div>
+  <!-- Start of summary table -->
+  <div class="summary">
+    <table cellspacing="0">
+      <tr>
+        <td>
+          <table cellspacing="1">
+            <tr class="header"><td>Parameter Name</td><td>Parameter Value</td></tr>
+EOF
+
+my %parameters;
+foreach my $parameter (@{$job->{propertySheet}->{property}}) {
+   $parameters{$parameter->{propertyName}} = $parameter->{value};
+   print "$parameter->{propertyName} = $parameter->{value}\n";
+}
+push @html, map {"<tr><td class=\"success\">$_</td><td class=\"success\">$parameters{$_}</td></tr>\n"} sort(keys(%parameters));
+
+push @html, <<EOF;
+          </table>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <p>
+  <h3>Job Steps</h3> 
+  <p>
+  
+  <div class="summary">    
+    
+    <table cellspacing="1">
+      <tr class="header">
+        <td>Step Name</td><td>Status</td><td>Outcome</td><td>Error Code</td><td>Summary</td><td>Start</td><td>Finish</td><td>Duration</td>
+      </tr>
+EOF
+
+# gather jobsteps that are used by the Continuous Delivery process for later notification
+my %build_jobs;
+my %test_jobs;
+foreach my $jobstep (@{$job->{jobStep}}) {
+   &print_jobstep(0, $jobstep);
+}
+
+push @html, <<EOF;
+    </table>
+  </div>
+  <!-- End of summary table -->
+EOF
+
+# add logs if available;
+if (@logs_html) {
+   push @html, <<EOF;
+  <p>
+  <h3>Job Error Logs</h3> 
+  <p>
+  <div style="display: inline-block;white-space: nowrap;">
+  <table width="100%"><tr><td>
+EOF
+   push @html, @logs_html;
+}
+push @html, <<EOF;
+  </td></tr></table>
+  </div>
+</body>
+</html>
+EOF
+
+# display html for logging purposes
+print @html;
+if (@ARGV) {
+   my $to = join(', ', @ARGV);
+   if ($to !~ 'project') {
+      &send_mail(to => join(', ', @ARGV), subject => $subject, msg => join('',@html));
+   }
+}
+
+# If a Build Job
+if ($job->{liveProcedure} =~ /^Build/ && ($args{Type} eq 'change' || $args{Type} eq 'aggregate')) {
+   print "Processing Gerrit update with build results...\n";
+
+   my $debug_opt = $debug ? '--debug' : '';
+   my $type = 'Build';
+   if ($args{Type} eq 'aggregate') {
+      $type = 'Aggregate build';
+   }
+
+   my $message = "$type results for: https://$host/commander/link/jobDetails/jobs/$job->{jobId}\n\n";
+   my $max_build_name = &max(map {length($_)} keys(%build_jobs));
+
+   my %coverity_results = ();
+   my %manifest = ();
+   my %deliverables = ();
+   my $changes = undef;
+
+   foreach my $build (sort(keys(%build_jobs))) {
+      my $jobstep = $build_jobs{$build};
+      $message .= "* $build: ". ($max_build_name - length($build)) x ' '. lc($jobstep->{outcome}). "\n";
+
+      my $deliverables = '';
+      foreach my $property (@{$jobstep->{propertySheet}->{property}}) {
+         if ($property->{propertyName} eq 'deliverables') {
+            $deliverables = $property->{value};
+         }
+      }
+      debug("Deliverables: $deliverables\n");
+      if ($deliverables) {
+         $deliverables{$build} = $deliverables;
+         if ($args{Coverity} && -e "$deliverables/coverity/scan-report.json") {
+            my $scan_results = `cat $deliverables/coverity/scan-report.json`;
+            my $coverity_results = from_json($scan_results);
+            print Dumper($coverity_results);
+            $coverity_results{$build} = $coverity_results->{issueInfo} if (defined($coverity_results->{issueInfo}) &&
+                                                                           scalar(@{$coverity_results->{issueInfo}}));
+            debug("Coverity: ", Dumper($coverity_results{$build}));
+         }
+         if ($args{Change} && -e "$deliverables/manifest.txt") {
+            $manifest{$build} = {};
+            my @manifest = `cat $deliverables/manifest.txt`;
+            chomp(@manifest);
+            foreach my $line (@manifest) {
+               if ($line =~ /^(.*?):\s*(.*?)$/) {
+                  $manifest{$build}->{$1} = $2;
+               }
+            }
+            $changes = $manifest{$build}->{change};
+         }
+      }
+   }
+   debug("Manifest: ", Dumper(\%manifest));
+
+   my $label_val = '-1';
+   if ($status eq 'success') {
+      $label_val = "2";
+   }
+
+   my %changes_merged = map {$_=>1} split(/[ ,]/, defined($changes) ? $changes : $args{Change});
+   # Update change with comment and label
+   my @changes = split(',',$args{Change} || '');
+   my @changes_merged;
+   my @changes_skipped;
+
+   foreach my $change (@changes) {
+      if (defined($changes_merged{$change})) {
+         push @changes_merged, $change;
+      }
+      else {
+         push @changes_skipped, $change;
+      }
+   }
+
+   my $label = 'Build-Verification';
+
+   # if an aggregate build
+   if ($args{Type} eq 'aggregate') {
+      $label = 'Aggregate-Build';
+   }
+
+   foreach my $change (@changes_merged) {
+      print "Calling gerrit_notify.pl\n>$tools_dir/gerrit/gerrit_notify.pl $debug_opt --change $change --message \"$message\" --label \"$label=$label_val\"";
+      system("$tools_dir/gerrit/gerrit_notify.pl $debug_opt --change $change --message \"$message\" --label \"$label=$label_val\"");
+   }
+   foreach my $change (@changes_skipped) {
+      $message = "Build results for: https://$host/commander/link/jobDetails/jobs/$job->{jobId}\n\nChange skipped due to conflict.  Please see build log for details.";
+      $label_val = -1;
+      print "Calling gerrit_notify.pl\n>$tools_dir/gerrit/gerrit_notify.pl $debug_opt --change $change --message \"$message\" --label \"$label=$label_val\"";
+      system("$tools_dir/gerrit/gerrit_notify.pl $debug_opt --change $change --message \"$message\" --label \"$label=$label_val\"");
+   }
+   sleep(1);
+
+   # Update change with Static Analysis results
+   if (keys(%build_jobs) && $status eq 'success' && $args{Coverity}) {
+      my $coverity_project = uc($args{Repo});
+      $coverity_project =~ s/_demo//i;
+
+
+      my %existing_mergekeys;
+
+      print "Fetch existing issues in project: $coverity_project";
+      my $json_results = `$tools_dir/coverity/get-defects.pl --json --project $coverity_project --mergekey --config ~/coverity-ccxsw.xml`;
+      if ($json_results) {
+         my $results = from_json($json_results);
+
+         foreach my $cid (sort(keys(%{$results}))) {
+            foreach my $project (sort(keys(%{$results->{$cid}}))) {
+               $existing_mergekeys{$results->{$cid}->{$project}->{mergeKey}} = $cid;
+               debug("$cid: $results->{$cid}->{$project}->{mergeKey}\n");
+            }
+         }
+         print "Retrieved ", scalar(keys(%existing_mergekeys)), " existing issues..\n";
+      }
+      else {
+         print "ERROR: Failed to retrieve existing issues..\n";
+      }
+
+      print "Fetch component map for project: $coverity_project";
+      my @component_rules = `$tools_dir/coverity/manage-components.pl --map $coverity_project --config ~/coverity-ccxsw.xml`;
+      chomp(@component_rules);
+
+      my %components;
+      my %regex;
+      my @regex;
+
+      if (@component_rules) {
+         foreach my $rule (@component_rules) {
+            my ($regex, $component) = split('=', $rule);
+            next unless ($component);
+            print "$regex => $component\n";
+
+            # order is important, push rule to array
+            $regex{$regex} = qr(^$regex$);
+            push @regex, $regex;
+            $components{$regex} = $component;
+         }
+         print "Retrieved ", scalar(keys(%components)), " component rules..\n";
+      }
+      else {
+         print "ERROR: Failed to retrieve existing issues..\n";
+      }
+
+      $message = "Static Analysis results:\n";
+
+      my %checker_impact = ();
+      # Load checker impact
+      if (-f "$tools_dir/coverity/checker_impact.cfg") {
+         my @checker_impact = `cat $tools_dir/coverity/checker_impact.cfg`;
+
+         foreach my $line (@checker_impact) {
+            if ($line =~ /^(.*?)\s+=\s+(.*)/) {
+               $checker_impact{$1}=$2;
+            }
+         }
+      }
+
+      my $existing_tally = 0;
+      my %impact_tally = (High => 0,
+                          Medium => 0,
+                          Low => 0);
+
+
+      if (keys(%coverity_results)) {
+         foreach my $build (sort(keys(%coverity_results))) {
+            print "$build...\n";
+            my $deliverables = $deliverables{$build};
+            $deliverables =~ s/^.*?deliverables/deliverables/;
+
+            $message .= "$build: https://$host/$deliverables/coverity/html/\n";
+
+            my $existing = 0;
+            my $count = 0;
+
+            foreach my $issue (sort(@{$coverity_results{$build}})) {
+               # ignore issue if defect exists in baseline project
+               if (defined($existing_mergekeys{$issue->{mergeKey}})) {
+                  $existing++;
+                  next;
+               }
+
+               debug(Dumper($issue));
+               my %impact = (High => 0,
+                             Medium => 0,
+                             Low => 0);
+
+               foreach my $occurrence (@{$issue->{occurrences}}) {
+                  my $component = 'Other';
+                  foreach my $regex (@regex) {
+                     if ($occurrence->{file} =~ /$regex{$regex}/i) {
+                        $component = $components{$regex};
+                        print "$regex -> $component\n";
+                        last;
+                     }
+                  }
+
+                  print "$occurrence->{file} -> $component\n";
+                  # ignore defects found in the Other component.  These are files to be excluded from analysis.
+                  if ($component eq 'Other') {
+                     print "Ignoring file: $occurrence->{file}\n";
+                     next;
+                  }
+
+                  my $impact = $checker_impact{"$occurrence->{checker}.$occurrence->{subcategory}"} || 'Low';
+                  $impact{$impact}++;
+
+                  $message .= "  $occurrence->{file}:$occurrence->{mainEventLineNumber} ($occurrence->{function})\n";
+                  $message .= "    $occurrence->{checker}.$occurrence->{subcategory} ($impact)\n";
+                  $message .= "    $occurrence->{mainEventDescription}\n\n";
+
+                  $count++;
+               }
+
+               my $issue_impact = 'Low';
+               $issue_impact = 'Medium' if ($impact{Medium});
+               $issue_impact = 'High' if ($impact{High});
+
+               $impact_tally{High} += $impact{High};
+               $impact_tally{Medium} += $impact{Medium};
+               $impact_tally{Low} += $impact{Low};
+               $existing_tally += $existing;
+
+            }
+
+            unless ($count) {
+               $message .= "  No Coverity issues found.\n";
+            }
+         }
+      }
+      else {
+         $message .= "  No Coverity issues found.\n";
+      }
+      print "$message";
+
+      $label = 'Static-Analysis';
+      $label_val = '+1';
+      if ($impact_tally{Low}) {
+         $label_val = '-1';
+      }
+      if ($impact_tally{High} || $impact_tally{Medium}) {
+         $label_val = '-2';
+      }
+
+      # escape quote characters
+      $message =~ s/\"/\\\"/gs;
+
+      foreach my $change (@changes) {
+         # TODO: determine if change was included in aggregate build
+         print "Calling gerrit_notify.pl\n";
+         system("$tools_dir/gerrit/gerrit_notify.pl $debug_opt --change $change --message \"$message\" --label \"$label=$label_val\"");
+      }
+   }
+}
+
+# If a Build Delivery job
+if ($job->{liveProcedure} =~ /^Build/ && $args{NotifyDelivery} && $args{Tag}) {
+   print "Sending delvery notice...\n";
+   my @body = ();
+   my @cc;
+
+   push @body, <<EOF;
+  <!-- Start of summary table -->
+  <div class="summary">
+    <table cellspacing="1">
+      <tr class="header"><td colspan=2>Build Summary</td></tr>
+      <tr><td>EC Job</td><td><a href=\"http://$host/commander/link/jobDetails/jobs/$ENV{COMMANDER_JOBID}\">$ENV{COMMANDER_JOBID}</a></td></tr>
+      <tr><td>Project</td><td>$args{Repo}</td></tr>
+      <tr><td>Branch</td><td>$args{Branch}</td></tr>
+      <tr><td>Tag</td><td>$args{Tag}</td></tr>
+      <tr></tr>
+      <tr class=\"header\"><td colspan=2>Build Deliverables</td></tr>
+EOF
+#     <tr><td>Project</td><td><a href=\"http://gerrit-ccxsw.rtp.broadcom.com:8080/gitweb?p=$args{Repo}.git\">$args{Repo}</a></td></tr>
+#     <tr><td>Branch</td><td><a href=\"http://gerrit-ccxsw.rtp.broadcom.com:8080/gitweb?p=$args{Repo}.git;a=shortlog;h=refs/heads/$args{Branch}\">$args{Branch}</a></td></tr>
+#     <tr><td>Tag</td><td><a href=\"http://gerrit-ccxsw.rtp.broadcom.com:8080/gitweb?p=$args{Repo}.git;a=tag;h=refs/tags/$args{Tag}\">$args{Tag}</a></td></tr>
+
+
+   foreach my $build (sort(keys(%build_jobs))) {
+      my $jobstep = $build_jobs{$build};
+      my $deliverables = '';
+      foreach my $property (@{$jobstep->{propertySheet}->{property}}) {
+         if ($property->{propertyName} eq 'deliverables') {
+            $deliverables = $property->{value};
+            last;
+         }
+      }
+      if ($deliverables) {
+         $deliverables =~ s/^.*?deliverables/deliverables/;
+         push @body, "<tr><td colspan=2><a href=\"http://$host/$deliverables\">$build</a></tr></td>\n";
+      }
+   }
+
+   push @body, <<EOF;
+     </table>
+   </div>
+EOF
+   # find last tag that isn't current build
+   my %refs = &remote_refs();
+   my $last_tag = '';
+   my $last_tag_date = 0;
+
+   foreach my $ref (keys(%refs)) {
+      if ($ref =~ /^refs\/tags\/($args{Branch}_.*?_(\d+?_\d+?))$/i) {
+         my $tag = $1;
+         my $datetime = $2;
+
+         print "$tag\n";
+         next if ($args{Tag} eq $tag);
+
+         if ($datetime >= $last_tag_date) {
+            $last_tag = $tag;
+            $last_tag_date = $datetime;
+         }
+      }
+   }
+
+   my $log_cmd = '';
+
+   # determine which commits to include in the delivery message
+   if ($last_tag) {
+      push @body, "<h4>Commits on $args{Branch} between $args{Tag} and $last_tag</h4>\n";
+      $log_cmd = "$last_tag..$args{Tag}"
+   }
+   else {
+      push @html, "<h4>Commits on $args{Branch}</h4>\n";
+
+      my @branch_list;
+      foreach my $ref (keys(%refs)) {
+         if ($ref =~ /refs\/heads\/(.*?)$/) {
+            push @branch_list, $1 unless ($1 eq $args{Branch});
+         }
+      }
+      $log_cmd = "$args{Branch} --not ". join(' ', sort(@branch_list));
+   }
+   print "git log command: $log_cmd\n";
+
+   if ($log_cmd) {
+      my @commit_log = &remote_cmd("log --pretty=\"format:commit %H%nAuthor: %an%nEmail: %ae%nDate: %aD%n%B\" $log_cmd");
+      chomp(@commit_log);
+
+      my %commit;
+      my @commit_list;
+      my %defects;
+
+      my $commit = '';
+      foreach my $line (@commit_log) {
+         if ($line =~ /^commit (.*?)$/) {
+            $commit = $1;
+            $commit{$commit} = {};
+            push @commit_list, $commit;
+            next;
+         }
+         elsif ($commit) {
+            if ($line =~ /^Date:\s+(.*?)$/i) {
+               $commit{$commit}->{Date} = $1;
+            }
+            elsif ($line =~ /^Author: (.*?)$/i) {
+               $commit{$commit}->{Author} = $1;
+            }
+            elsif ($line =~ /^Email: (.*?)$/i) {
+               $commit{$commit}->{Email} = $1;
+            }
+            elsif ($line =~ /^Bug: (.*?)$/i) {
+               $commit{$commit}->{Bug} = $1;
+               $defects{$1} = 1;
+            }
+            elsif ($line =~ /^Change-Id: (.*?)$/i) {
+               $commit{$commit}->{'Change-Id'} = $1;
+            }
+            else {
+               $commit{$commit}->{Comment} = $commit{$commit}->{Comment} ? "$commit{$commit}->{Comment}\n$line" : $line;
+            }
+         }
+      }
+      print Dumper(\%commit);
+
+      # fetch information about each defect referenced;
+      foreach my $id (sort(keys(%defects))) {
+         my $defect_json = `perl $tools_dir/jira/query_issue.pl --json --id $id`;
+         my $defect_data = from_json($defect_json);
+         next if ($defect_data->{errorMessages});
+
+         push @cc, $defect_data->{Assignee} if ($defect_data->{Assignee});
+         push @cc, $defect_data->{Verifier} if ($defect_data->{Verifier});
+      }
+
+      push @body, "<div class=\"summary\">\n<table cellspacing=\"0\" width=\"800\">\n";
+      push @body, "<tr class=\"header\"><td>JIRA</td><td>Author</td><td>Date</td><td>Change ID</td><td>Build Job</td><td>Test Job</td></tr>\n";
+
+      foreach my $commit (reverse(@commit_list)) {
+         push @body, "<tr class=\"header\">\n<td><a href=\"http://jira-ccxsw.rtp.broadcom.com:8080/browse/$commit{$commit}->{Bug}\">$commit{$commit}->{Bug}</a></td>\n<td>$commit{$commit}->{Author}</td>\n<td>$commit{$commit}->{Date}</td>\n";
+         if ($commit{$commit}->{Email}) {
+            push @cc, $commit{$commit}->{Email};
+         }
+
+         if ($commit{$commit}->{'Change-Id'}) {
+            # fetch change information from gerrit
+            my $change_json = `$tools_dir/gerrit/gerrit_query.pl --option DETAILED_ACCOUNTS --option MESSAGES change:$commit{$commit}->{'Change-Id'}`;
+            my $change = from_json($change_json);
+            print Dumper($change);
+            if (@{$change}) {
+               my $change_id = $change->[0]->{_number};
+               push @body, "<td><a href=\"http://gerrit-ccxsw.rtp.broadcom.com:8080/#/c/$change_id\">$change_id</a></td>";
+
+               # add owner email to delivery notification
+               push @cc, $change->[0]->{owner}->{email};
+
+               my $build_job = "<td>&nbsp;</td>";
+               my $test_job = "<td>&nbsp;</td>";
+
+               # determine which build was submitted for build-verification, test-verification
+               foreach my $message (@{$change->[0]->{messages}}) {
+                  next unless ($message->{author}->{username} eq 'ccxswbuild');
+                  print "Message:\n$message->{message}\n";
+
+                  if (($message->{message} =~ /Build-Verification\+2/) && ($message->{message} =~ /(https.*?\/jobs\/(\d+))/)) {
+                     print "1: $1\n2: $2\n";
+                     $build_job = "<td><a href=\"$1\">$2</a></td>";
+                  }
+                  elsif (($message->{message} =~ /Test-Verification\+2/) && ($message->{message} =~ /(https.*?\/jobs\/(\d+))/)) {
+                     print "1: $1\n2: $2\n";
+                     $test_job = "<td><a href=\"$1\">$2</a></td>";
+                  }
+               }
+               push @body, "$build_job$test_job\n";
+            }
+            else {
+               push @body, "<td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td>\n";
+            }
+         }
+         my $comment = $commit{$commit}->{Comment};
+         $comment =~ s/\n*$//s;
+         $comment =~ s/\n/<br>\n/gs;
+         push @body, "</tr>\n<tr><td colspan=6 style=\"border: 1px solid black;\">$comment</td>\n</tr>\n";
+
+      }
+      push @body, "</table>\n</div>\n";
+   }
+   my $subject = "$args{Tag} delivery for $args{Repo} ($args{Branch})";
+
+   @html = <<EOF;
+<title>Delivery Notification</title>
+<head>
+$style
+</head>
+<body>
+@body
+</body>
+EOF
+   print @html;
+
+   my @to = split(/[,; ]+/, $args{NotifyDelivery});
+
+   if (@to) {
+      # extract email address from <> if present, add @broadcom.com to all addresses with no @, filter for only broadcom addresses
+      @to = grep {$_ =~ /\@broadcom.com/}
+            map {$_ =~ /\@/ ? $_ : "$_\@broadcom.com"}
+            map {$_ =~ /\<(.*?)\>/ ? $1 : $_}
+            @to;
+
+      @cc = grep {$_ =~ /\@broadcom.com/}
+            map {$_ =~ /\@/ ? $_ : "$_\@broadcom.com"}
+            map {$_ =~ /\<\s*(.*?)\s*\>/ ? $1 : $_}
+            @cc;
+
+      # remove duplicates
+      my %to = map {$_ => 1} @to;
+      @to = sort(keys(%to));
+
+      my %cc = map {$_ => 1} grep {!defined($to{$_})} @cc;
+      @cc = sort(keys(%cc));
+
+      my %mail_args = (to => join(', ', @to), 
+                       subject => $subject, 
+                       msg => join('',@html));
+      $mail_args{cc} = join(', ', @cc) if (@cc);
+
+      &send_mail(%mail_args);
+   }
+}
+
+# If a Test job
+if ($job->{liveProcedure} =~ /^Test/ && $args{Change}) {
+   print "Processing Gerrit update with test results...\n";
+   # iterate through changes
+   my @changes = split(',',$args{Change} || '');
+   foreach my $change (@changes) {
+      my $debug_opt = $debug ? '--debug' : '';
+      my $type = 'Test';
+      if ($args{Type} eq 'aggregate') {
+         $type = 'Aggregate test';
+      }
+
+      my $message = "$type results for: https://$host/commander/link/jobDetails/jobs/$job->{jobId}\n\n";
+      my $max_build_name = &max(map {length($_)} keys(%test_jobs));
+
+      if (scalar(keys(%test_jobs))) {
+         foreach my $build (sort(keys(%test_jobs))) {
+            my $jobstep = $test_jobs{$build};
+            $message .= "* $build: ". ($max_build_name - length($build)) x ' '. lc($jobstep->{outcome}). "\n";
+         }
+      }
+      else {
+         $message .= "  No builds to test.\n";
+      }
+
+      my $label = 'Test-Verification';
+
+      # if an aggregate build
+      if ($args{Type} eq 'aggregate') {
+         $label = 'Aggregate-Test';
+      }
+      my $label_val = '-1';
+      if ($status eq 'success') {
+         $label_val = "2";
+      }
+
+      print "Calling gerrit_notify.pl\n";
+      system("$tools_dir/gerrit/gerrit_notify.pl $debug_opt --change $change --message \"$message\" --label \"$label=$label_val\"");
+   }
+}
+
+# parse XML node tree to extract values as a hash
+sub get_nodes {
+   my ($node) = @_;
+
+   my @subnodes = $node->getChildNodes();
+   if (@subnodes) {
+      my %node;
+      foreach my $subnode ($node->getChildNodes()) {
+         my $key = $subnode->getLocalName() || '';
+         my $val = &get_nodes($subnode);
+         $val = defined($val) ? $val : '';
+
+         if (defined($node{$key})) {
+            if (ref($node{$key}) eq 'ARRAY') {
+               push @{$node{$key}}, $val;
+            }
+            else {
+               $node{$key} = [$node{$key}, $val];
+            }
+         }
+         else {
+            if ($key eq 'property' || $key eq 'jobStep') {
+               $node{$key} = [$val];
+            }
+            else {
+               $node{$key} = $val;
+            }
+         }
+      }
+      if (scalar(keys(%node)) == 1 && defined($node{''})) {
+         return $node{''};
+      }
+      delete($node{''});
+      return \%node;
+   }
+   else {
+      return $node->string_value();
+   }
+}
+
+# fetch job properties from EC for this or a given job
+sub get_jobinfo($) {
+   my ($cmdr, $jobid) = @_;
+
+   $jobid ||= $ENV{COMMANDER_JOBID};
+
+   my $xPath = $cmdr->getJobDetails( $jobid );
+#   print "Return data from Commander:\n", $xPath-> findnodes_as_string("/"). "\n";
+
+   my %jobs;
+   foreach my $job ($xPath->findnodes('//job')) {
+      my $jobid = $job->findvalue('jobId')->value();
+      $jobs{$jobid} = &get_nodes($job);
+   }
+
+   return %jobs;
+}
+
+# fetch jobstep information from EC for this or a given job
+sub get_jobsteps($) {
+   my ($cmdr, $jobid) = @_;
+
+   $jobid ||= $ENV{COMMANDER_JOBID};
+
+   my $xPath = $cmdr->findJobSteps( {jobId => $jobid,
+                                     select  => [{propertyName => 'duration'},
+                                                 {propertyName => 'summary'}],
+                                     });
+#   print "Return data from Commander:\n", $xPath-> findnodes_as_string("/"). "\n";
+
+   my %jobsteps;
+   foreach my $jobstep ($xPath->findnodes('//jobStep')) {
+      my $jobstepid = $jobstep->findvalue('jobStepId')->value();
+      $jobsteps{$jobstepid} = &get_nodes($jobstep);
+   }
+
+#   print Dumper(\%jobsteps);
+   return %jobsteps;
+}
+
+# fetch hash of values passed to job procedure
+sub get_args($) {
+   my ($cmdr) = @_;
+   my $xPath = $cmdr->getProperties({jobId => $ENV{COMMANDER_JOBID}});
+   print "Return data from Commander:\n", $xPath->findnodes_as_string("/"). "\n";
+
+   my %args;
+   foreach my $property ($xPath->findnodes('//property')) {
+      my $key = $property->findvalue('propertyName');
+      my $val = $property->findvalue('value')->value();
+      $args{$key} = $val;
+      print "$key = $val\n";
+   }
+   return %args;
+}
+
+# set a property on the EC server
+sub SetProperty($$) {
+   my ($property, $value) = @_;
+   my $xPath = undef;
+   eval {
+      $xPath = $cmdr->setProperty($property, $value);
+   };
+   if ($xPath) {
+      debug($xPath->findnodes_as_string("/") . "\n"); 
+   }
+   else {
+      print $@;
+   }
+}
+
+sub GetProperties($;$) {
+   my ($args) = @_;
+   my $xPath = undef;
+
+   my %properties;
+
+   eval {
+      $xPath = $cmdr->getProperties($args);
+   };
+   if ($xPath) {
+      debug($xPath->findnodes_as_string("/") . "\n"); 
+      foreach my $node ($xPath->findnodes('//property')) {
+         my $key = $xPath->findvalue('propertyName', $node)->value();
+         my $val = $xPath->findvalue('value', $node)->value();
+         debug("$key = $val\n");
+         $properties{$key} = $val;
+      }
+      return %properties;
+   }
+   else {
+      print $@;
+      return ();
+   }
+}
+
+# get a property on the EC server
+sub GetProperty($) {
+   my ($property) = @_;
+   my $xPath = undef;
+   eval {
+      $xPath = $cmdr->GetProperty($property);
+   };
+   if ($xPath) {
+      debug($xPath->findnodes_as_string("/") . "\n"); 
+      return $xPath->findvalue('//value')>value();
+   }
+   else {
+      print $@;
+      return '';
+   }
+}
+
+# send an html email
+sub send_mail() {
+  use Mail::Sender;
+  my %options = @_;
+
+  print "Sending email...\n";
+  debug(Dumper(\%options));
+
+  eval {
+     my $sender = new Mail::Sender { smtp => 'smtphost.sj.broadcom.com', 
+                                     from => 'commander@broadcom.com',
+                                     ctype => 'text/html',
+                                     encoding => 'quoted-printable',
+                                   };
+     ref($sender) or die "Error in New : $Mail::Sender::Error\n";
+
+     my %open_args = (to => $options{to},
+                      subject => $options{subject}
+                     );
+     $open_args{cc} = $options{cc} if ($options{cc});
+     $open_args{bcc} = $options{bcc} if ($options{bcc});
+
+     ref($sender->Open(\%open_args)) or die "Error in Open : $Mail::Sender::Error\n";
+
+     ref($sender->SendLineEnc($options{msg})) or die "Error in SendEnc : $Mail::Sender::Error\n";
+
+     $sender->Close() or die "Error in SendEnc : $Mail::Sender::Error\n";
+  };
+  if ($@) {
+     print "Failed to send the message: $@\n";
+  }
+  else {
+     print "Mail sent.\n";
+  }
+}
+
+sub dhms($) {
+   my ($sec) = @_;
+   print "DHMS: $sec\n";
+
+   my $day = int($sec / (24*60*60));
+   $sec -= $day * (24*60*60);
+
+   my $hour = int($sec / (60*60));
+   $sec -= $hour * (60*60);
+
+   my $min = int($sec / 60);
+   $sec -= $min * 60;
+
+   my @parts;
+   push @parts, $day == 1 ? "${day} Day, " : "${day} Days, " if ($day);
+   my $zero = $sec < 10 ? '0' : '';
+   push @parts, sprintf("%02d:%02d:$zero%02.3f",$hour,$min,$sec);
+   return join('', @parts);
+}
+
+sub print_jobstep($$) {
+   my ($depth, $step) = @_;
+   my $host = "http://$step->{hostName}";
+
+   my $step_name = $step->{stepName};
+   print "Step: $step_name\n";
+
+   my $outcome = $step->{outcome};
+   my $error = $step->{exitCode} || $step->{abortStatus} || '';
+
+   if ($step->{command} =~ /\/build\/run/) {
+      $build_jobs{$step->{stepName}} = $step;
+   }
+   elsif ($step->{command} =~ /\/test\/run/) {
+      $test_jobs{$step->{stepName}} = $step;
+   }
+
+   my $summary = '';
+   my $duration = 0;
+   foreach my $property (@{$step->{propertySheet}->{property}}) {
+      if ($property->{propertyName} eq 'summary') {
+         $summary = $property->{value};
+      }
+      elsif ($property->{propertyName} eq 'duration') {
+         $duration = &dhms($property->{value});
+      }
+   }
+
+   $duration ||= &dhms($step->{elapsedTime}/1000);
+
+   # Add tabs for each step based on depth
+   my $stepPadding = ("&nbsp;&nbsp;&nbsp;" x $depth);
+
+   my $logfile = $step->{logFileName};
+   $logfile =~ s/\s/\+/g;
+
+   my $parallel = $step->{parallel} ? '|- ' : '-- ';
+   my $finish = $step->{finish} || '';
+
+   push @html, <<EOF;
+    <tr>
+      <td class="$outcome">$stepPadding$parallel<a href="$host/commander/link/jobStepDetails/jobSteps/$step->{jobStepId}?jobId=$job->{jobId}">$step_name</a></td>
+      <td class="$outcome">$step->{status}</td>
+      <td class="$outcome"><a href="$host/commander/link/workspaceFile/workspaces/$step->{workspaceName}?jobStepId=$step->{jobStepId}&fileName=$step->{logFileName}&jobName=$job->{jobName}&jobId=$job->{jobId}&resourceName=$step->{resourceName}&completed=1">$outcome</a></td>
+      <td class="$outcome">$error</td>
+      <td class="$outcome">$summary</td>
+      <td class="$outcome">$step->{runnable}</td>
+      <td class="$outcome">$finish</td>
+      <td class="$outcome">$duration</td>
+    </tr>
+EOF
+
+   &print_jobstep_errorlog($step) if ($step->{outcome} eq 'error');
+
+   if (defined($step->{calledProcedure})) {
+      foreach my $substep (@{$step->{calledProcedure}->{jobStep}}) {
+         print "Substep...\n";
+         push @html, &print_jobstep($depth+1, $substep);
+      }
+   }
+}
+
+# display jobstep error log, only including sections around errors
+sub print_jobstep_errorlog($) {
+   my ($step) = @_;
+   my $logfile = $job->{workspace}->{unix} . "/" . $step->{logFileName};
+   print "logfile: $logfile\n";
+   if (open(FILE, "<$logfile")) {
+      my @lines = <FILE>;
+
+      my @error_log;
+      if (@lines < 30) {
+         print "less than 30 lines in log\n";
+         @error_log = &print_log(0, $#lines, @lines);
+      }
+      else {
+         my @errors;
+
+         foreach my $line_no (0..$#lines) {
+            my $line = $lines[$line_no];
+            chomp($line);
+#            print "$line_no: $line\n";
+
+            if (($line =~ /error:/ || $line =~ /Error/) && $line !~ /ignored/) {
+               print "error on line $line_no\n";
+               push @errors, $line_no;
+            }
+         }
+
+         # add the last few lines for clarity
+         push @errors, $#lines;
+
+         if (@errors) {
+            my ($from, $to) = (-1, -1);
+            foreach my $error (@errors) {
+               if ($from == -1 || $to == -1) {
+                  $from = $to = $error;
+                  print "start at $from\n";
+                  next;
+               }
+
+               # if within 15 lines of current section, extend section to new line
+               if ($to > ($error - 15)) {
+                  $to = $error;
+                  print "extend section to $from..$to\n";
+
+                  # fall through if last error
+                  next unless ($error == $errors[-1]);
+               }
+
+               print "add section $from..$to\n";
+               # add section to error log
+               my $start = $from - 5;
+               my $stop = $to + 5;
+
+               $start = 0 if ($start < 0);
+               $stop = $#lines if ($stop > $#lines);
+
+               print "add lines $start..$stop\n";
+
+               my @new_log = &print_log($start, $stop, @lines);
+
+               # don't include duplicate '...'
+               pop @error_log if ($error_log[-1] eq $snip && $new_log[0] eq $snip);
+
+               push @error_log, @new_log;
+
+               $from = $to = -1;
+            }
+         }
+      }
+
+      unless (@error_log)
+      {
+         print "no error found\n";
+         print "using last 30 lines\n";
+         # no error found, just use last 30 lines
+         @error_log = &print_log($#lines - 30, $#lines, @lines);
+      }
+
+      push @logs_html, "<b><a href=\"https://$host/commander/link/workspaceFile/workspaces/$step->{workspaceName}?jobStepId=$step->{jobStepId}&fileName=$step->{logFileName}&jobName=$job->{jobName}&jobId=$job->{jobId}&resourceName=$step->{resourceName}&completed=1\">$step->{stepName}</a>:</b>\n<pre>\n", @error_log, "</pre>\n";
+   }
+}
+
+# extract and fomat lines from log
+sub print_log($$@) {
+   my ($from, $to, @lines) = @_;
+   my $spacing = length($#lines);
+
+   my @output;
+   push @output, $snip if ($from > 0);
+
+   # ignore blank lines
+   $from++ while ($lines[$from] eq "\n");
+   $to-- while ($lines[$to] eq "\n");
+
+   # add formatted lines to output array
+   foreach my $line_no ($from..$to) {
+      push @output, sprintf("%*s: %s", $spacing, $line_no+1, $lines[$line_no]);
+   }
+   push @output, $snip if ($to < $#lines);
+
+   return @output;
+}
+
+sub max() {
+   my (@vals) = @_;
+
+   my $max = 0;
+   foreach my $val (@vals) {
+      $max = $val if ($val > $max);
+   }
+
+   return $max;
+}
+
+sub remote_refs() {
+   my @refs = &remote_cmd("show-ref --tags --heads --dereference");
+   my %refs = ();
+   foreach my $ref_pair (@refs) {
+      my ($hash, $tag) = split(' ', $ref_pair, 2);
+      $refs{$tag} = $hash;
+   }
+   return %refs;
+}
+
+sub remote_cmd() {
+   my ($cmd) = @_;
+   my @data = `ssh svcccxswgit\@git-ccxsw.rtp.broadcom.com 'git --git-dir=/home/svcccxswgit/repositories/$args{Repo}.git $cmd' 2>&1`;
+   chomp(@data);
+   
+   my $header = 1;
+   my @out_data;
+   foreach my $line (@data) {
+      next if ($header && $line =~ /^[+|]/);
+      $header = 0;
+      push @out_data, $line;
+   }
+
+   if (wantarray()) {
+      return @out_data;
+   }
+   else {
+      return $out_data[0] || undef;
+   }
+}
+
+exit;
+

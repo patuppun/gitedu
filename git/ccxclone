@@ -1,0 +1,14 @@
+#!/bin/sh
+
+SITE=$1
+REPO=$2
+CLONE=$3
+
+if [ ! -n "$CLONE" ]
+then
+  CLONE=$REPO
+fi
+
+git clone svcccxswgit@git-ccxsw.$SITE.broadcom.com:$REPO $CLONE 
+cd $CLONE
+ccxswinit.pl
