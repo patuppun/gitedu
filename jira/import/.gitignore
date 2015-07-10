@@ -1,0 +1,7 @@
+*.json
+*.sql
+*.tgz
+*.csv
+*/*.txt
+*/*/*.txt
+

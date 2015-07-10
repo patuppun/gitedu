@@ -1,0 +1,11 @@
+{
+  "project.key" : "AVB",
+  "date.import.format" : "dd/MMM/yy h:mm a",
+  "user.email.suffix" : "@",
+  "mapfromcsv" : "false",
+  "field.Summary" : "summary",
+  "project.name" : "AVB",
+  "project.lead" : "jiraadmin",
+  "field.Attachment" : "attachment",
+  "field.issue key" : "issuekey"
+}

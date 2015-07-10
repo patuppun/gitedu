@@ -1,0 +1,48 @@
+{
+   "Product" : {
+      "columns" : [
+         "Project",
+         "Value"
+      ],
+      "fields" : {
+         "Project" : {
+            "long_name" : "Project",
+            "null" : 0,
+            "short_name" : "Project",
+            "type" : 12
+         },
+         "Value" : {
+            "long_name" : "Value",
+            "null" : 0,
+            "short_name" : "Value",
+            "type" : 12
+         },
+         "idProduct" : {
+            "long_name" : "idProject",
+            "short_name" : "idProject",
+            "type" : 4
+         }
+      },
+      "index" : "idProduct"
+   },
+   "Project" : {
+      "columns" : [
+         "Value"
+      ],
+      "fields" : {
+         "Value" : {
+            "long_name" : "Value",
+            "null" : 0,
+            "short_name" : "Value",
+            "type" : 12
+         },
+         "idProject" : {
+            "long_name" : "idProject",
+            "short_name" : "idProject",
+            "type" : 4
+         }
+      },
+      "index" : "idProject"
+   }
+}
+

@@ -1,0 +1,12 @@
+{
+  "date.import.format" : "dd/MMM/yy h:mm a",
+  "user.email.suffix" : "@",
+  "mapfromcsv" : "true",
+  "field.Summary" : "summary",
+  "field.Project Name" : "project.name",
+  "field.Attachment" : "attachment",
+  "field.Project Key" : "project.key",
+  "field.issue key" : "issuekey",
+  "field.Updated" : "updated",
+  "date.fields" : "Updated"
+}
