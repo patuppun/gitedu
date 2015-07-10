@@ -8,7 +8,7 @@ file_debug2 +=("new issue: " + k);
 
 //string [] fields = {"assignee","Issue Description","OS","Product","Severity","Issue Origin","Test Case ID","Chip", "Product", "Software Component", "Hardware/Board Revision", "Customer", "Issue Type", "Phase Found", "Priority", "Release Found", "Reporter", "summary", "Target Branch", "Test Blockage"};
 
-//string [] fields = {"assignee", "priority", "reporter"};
+string [] fields = {"assignee", "priority", "reporter"};
 
 // iterate over key/value pairs in values mapping
 //for (string field in fields) {
@@ -18,8 +18,6 @@ file_debug2 +=("new issue: " + k);
 %k%.assignee = assignee;
 %k%.priority = priority;
 %k%.reporter = currentUser();
-//Chip
-%k%.customfield_10000 = customfield_10000;
 //Customer
 %k%.customfield_10002 = customfield_10002; 
 //Hardware/Board Revision
@@ -41,62 +39,47 @@ file_debug2 +=("new issue: " + k);
 %k%.customfield_10032 = customfield_10032;
 //Software Component
 %k%.customfield_10026 = customfield_10026;
-//Target Branch
+//Requested Release
 %k%.customfield_10023 = customfield_10023;
+//Target Branch
+%k%.customfield_10028 = customfield_10028;
 //Test Case ID
 %k%.customfield_10029 = customfield_10029;
 //Test Blockage
 %k%.customfield_10202 = customfield_10202;
-
-
+//Chip
+%k%.customfield_10000 = customfield_10000;
 
 //Set the Verifier Field based upon the Reporter
 //%k%.customfield_10303 = currentUser();
-
-
 // Handle nFeed Fields
 file_debug2 +="\n";
 file_debug2 +=("Test nFeed Start \n");
-file_debug2 +=("Test nFeed Start \n");
 file_debug2 +=("nFeed Values Before Set \n");
 file_debug2 +=("From Values \n");
-file_debug2 +=( "Customer Name: customfield_10002 = " + customfield_10002[0]+ "\n");
-file_debug2 +=( "Release Found: customfield_10022 = " + customfield_10022[0] + "\n");
-file_debug2 +=( "Target Branch: customfield_10023 = " + customfield_10023[0] + "\n");
+file_debug2 +=( "Customer Name: customfield_10002 = " + customfield_10002+ "\n");
+file_debug2 +=( "Release Found: customfield_10022 = " + customfield_10022 + "\n");
+file_debug2 +=( "Chip: customfield_10000 = " + customfield_10000 + "\n");
 file_debug2 +=("To Values \n");
-file_debug2 +=( "Customer Name: %k%.customfield_10002 = " + %k%.customfield_10002[0] + "\n");
-file_debug2 +=( "Release Found: %k%.customfield_10022 = " + %k%.customfield_10022[0] + "\n");
-file_debug2 +=( "Target Branch: %k%.customfield_10023 = " + %k%.customfield_10023[0] + "\n");
+file_debug2 +=( "Customer Name: %k%.customfield_10002 = " + %k%.customfield_10002 + "\n");
+file_debug2 +=( "Release Found: %k%.customfield_10022 = " + %k%.customfield_10022 + "\n");
+file_debug2 +=( "Requested Release: %k%.customfield_10023 = " + %k%.customfield_10023 + "\n");
+file_debug2 +=( "Chip: %k%.customfield_10000 = " + %k%.customfield_10000 + "\n");
+
 
 //////////////////////////////////////////////////////////////////
 //Set the nFeed Fields
 //////////////////////////////////////////////////////////////////
 
-//Set the Customer Name Field
-//%k%.customfield_10002 = customfield_10002;
-//Set the Platform Found On Field
-//%k%.customfield_12204 = customfield_12204;
-//Set the Release Found Field
-//%k%.customfield_10022 = customfield_10022;
-//Set the Target Branch Field
-//%k%.customfield_10023 = customfield_10023;
-//Set the FASTPATH Component Field
-//%k%.customfield_12202 = customfield_12202;
-
-
 file_debug2 +=("nFeed Values After Set \n");
 file_debug2 +=("From Values \n");
 file_debug2 +=( "Customer Name: .customfield_10002 = " + customfield_10002[0] + "\n");
-//file_debug2 +=( "Platform Found On: customfield_12204 = " + customfield_12204[0] + "\n");
 file_debug2 +=( "Release Found: customfield_10022 = " + customfield_10022[0] + "\n");
 file_debug2 +=( "Target Branch: customfield_10023 = " + customfield_10023[0] + "\n");
-//file_debug2 +=( "FASTPATH Component: customfield_12202 = " + customfield_12202[0] + "\n");
 file_debug2 +=("To Values \n");
-file_debug2 +=( "Customer Name: %k%.customfield_10002 = " + %k%.customfield_10002[0] + "\n");
-//file_debug2 +=( "Platform Found On: %k%.customfield_12204 = " + %k%.customfield_12204[0] + "\n");
-file_debug2 +=( "Release Found: %k%.customfield_10022 = " + %k%.customfield_10022[0] + "\n");
-file_debug2 +=( "Target Branch: %k%.customfield_10023 = " + %k%.customfield_10023[0] + "\n");
-//file_debug2 +=( "FASTPATH Component: %k%.customfield_12202 = " + %k%.customfield_12202[0] + "\n");
+file_debug2 +=( "Customer Name: %k%.customfield_10002 = " + %k%.customfield_10002 + "\n");
+file_debug2 +=( "Release Found: %k%.customfield_10022 = " + %k%.customfield_10022 + "\n");
+file_debug2 +=( "Requested release: %k%.customfield_10028 = " + %k%.customfield_10028 + "\n");
 file_debug2 +=("Test nFeed End \n");
 file_debug2 +=("Test nFeed End \n");
 
@@ -109,8 +92,7 @@ print(file_debug2);
 ////////////////////////////////////////////////////////////////////
 
 linkIssue(k, key, "Cloners");
-linkIssue(k, key, "Relates");
-
+//linkIssue(k, key, "Relates");
 
 
 //////////////////////////////////////////////////////////////////
@@ -150,7 +132,7 @@ root_path = "/projects/ccxsw_jira/staging/jirahome/data/attachments/";
 // Attach the copied file to the cloned issue.  Then delete the temporary (copied) file.
 
 //strSQL="select id, filename from jiraschema.fileattachment where issueid="+id+" order by id desc";
-strSQL="select ID, filename from CCXSW_JIRA_Staging.fileattachment where issueid=38600 order by id desc  ";
+strSQL="select ID, filename from CCXSW_JIRA_Staging.fileattachment where issueid="+id+" order by id desc  ";
 loop_count = size(attachments)*2;
 file_debug +=("loop_count  = " + loop_count  + "\n");
 
